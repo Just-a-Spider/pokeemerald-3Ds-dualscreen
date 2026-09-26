@@ -154,7 +154,10 @@ class VtreeTests(unittest.TestCase):
         struct.pack_into("<iiIIII", rom, 0x200, 20, 30, 0, 0, base + 0x100, base + 0x120)
         # Warps at 0x300: one warp (5, 6) to group 0 num 1.
         struct.pack_into("<hhBBBB", rom, 0x300, 5, 6, 0, 2, 1, 0)
-        struct.pack_into("<BBBBIIII", rom, 0x280, 0, 1, 0, 0, 0, base + 0x300, 0, 0)
+        # Background events at 0x320: a sign at (7, 8) and a hidden item.
+        struct.pack_into("<HHBB2xI", rom, 0x320, 7, 8, 0, 0, 0)
+        struct.pack_into("<HHBB2xI", rom, 0x32C, 9, 9, 0, 7, 0)
+        struct.pack_into("<BBBBIIII", rom, 0x280, 0, 1, 0, 2, 0, base + 0x300, 0, base + 0x320)
         # Connections at 0x340 -> table at 0x350.
         struct.pack_into("<iI", rom, 0x340, 1, base + 0x350)
         struct.pack_into("<B3xiBB2x", rom, 0x350, 2, -4, 0, 1)
@@ -172,6 +175,7 @@ class VtreeTests(unittest.TestCase):
             "connection_directions": {"2": "up"},
             "metatiles_h": [["gMetatiles_A", "data/tilesets/primary/a/metatiles.bin"]],
             "headers_h": [["gTileset_A", "gMetatiles_A"]],
+            "metatile_behaviors": [["MB_NORMAL", 0], ["MB_JUMP_EAST", 56]],
         }
         payload = b"\x01\x02"
         rom[0x600:0x602] = payload
@@ -193,6 +197,9 @@ class VtreeTests(unittest.TestCase):
             self.assertEqual(m["connections"][0], {"map": "MAP_THERE", "offset": -4, "direction": "up"})
             self.assertEqual((root / "data/layouts/X/map.bin").read_bytes(), payload)
             self.assertIn("gMetatiles_A", (root / "src/data/tilesets/metatiles.h").read_text())
+            self.assertEqual(m["bg_events"], [{"type": "sign", "x": 7, "y": 8, "elevation": 0}])
+            self.assertIn("MB_JUMP_EAST = 56,",
+                          (root / "include/constants/metatile_behaviors.h").read_text())
 
 
 if __name__ == "__main__":

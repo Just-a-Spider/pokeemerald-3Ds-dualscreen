@@ -422,6 +422,31 @@ bool VoxelWorld_UsesTreeSprites(const VoxelMapInstance *inst)
  * The exceptions are small things that are not terrain: water, which sits a
  * little under the ground, and indoor furniture.
  */
+/*
+ * The few behaviours that say what a cell looks like, asked through the
+ * game's own predicates: water sits under the ground, counters and machines
+ * stand up. Everything else says nothing (VOXEL_SHAPE_COUNT).
+ */
+static VoxelVisualShape BehaviorShape(u8 behavior)
+{
+    if (MetatileBehavior_IsSurfableWaterOrUnderwater(behavior)
+     || MetatileBehavior_IsPuddle(behavior)
+     || MetatileBehavior_IsShallowFlowingWater(behavior)
+     || behavior == MB_HOT_SPRINGS
+     || behavior == MB_REFLECTION_UNDER_BRIDGE)
+        return VOXEL_SHAPE_WATER;
+    if (MetatileBehavior_IsCounter(behavior))
+        return VOXEL_SHAPE_COUNTER;
+    if (MetatileBehavior_IsPC(behavior)
+     || MetatileBehavior_IsSecretBasePC(behavior)
+     || MetatileBehavior_IsPlayerRoomPCOn(behavior)
+     || behavior == MB_SECRET_BASE_REGISTER_PC
+     || behavior == MB_TELEVISION
+     || behavior == MB_CABLE_BOX_RESULTS_1)
+        return VOXEL_SHAPE_FURNITURE;
+    return VOXEL_SHAPE_COUNT;
+}
+
 VoxelVisualShape VoxelWorld_ClassifyTile(int worldX, int worldY)
 {
     const VoxelMapInstance *inst = VoxelWorld_GetInstanceAt(worldX, worldY);
@@ -442,7 +467,7 @@ VoxelVisualShape VoxelWorld_ClassifyTile(int worldX, int worldY)
         return VOXEL_SHAPE_SIGN;
 
     /* The cells whose behaviour says what they are: water and furniture. */
-    announced = Voxel_BehaviorShape(VoxelWorld_GetMetatileBehavior(worldX, worldY));
+    announced = BehaviorShape(VoxelWorld_GetMetatileBehavior(worldX, worldY));
     if (announced != VOXEL_SHAPE_COUNT)
         return announced;
 

@@ -92,4 +92,22 @@ def metadata(root: Path, syms: dict[str, int]) -> dict:
     types = (root / "include/constants/map_types.h").read_text(encoding="utf-8")
     meta["map_types"] = {int(v): k for k, v in re.findall(r"#define\s+(MAP_TYPE_\w+)\s+(\d+)", types)}
     meta["connection_directions"] = CONNECTION_DIRECTIONS
+    meta["metatile_behaviors"] = metatile_behaviors(root)
     return meta
+
+
+def metatile_behaviors(root: Path) -> list[list]:
+    """[name, value] for every entry of the metatile behaviour enum."""
+    text = (root / "include/constants/metatile_behaviors.h").read_text(encoding="utf-8")
+    body = text[text.index("{") + 1:text.index("}")]
+    out, value = [], 0
+    for item in body.split(","):
+        item = re.sub(r"//.*", "", item).strip()
+        if not item:
+            continue
+        m = re.match(r"(\w+)\s*(?:=\s*(\w+))?", item)
+        if m.group(2):
+            value = int(m.group(2), 0)
+        out.append([m.group(1), value])
+        value += 1
+    return out

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble an Pokémon Emerald 3Ds Dual Screen release.
+"""Assemble a Pokémon Emerald 3Ds Dual Screen release.
 
     python tools/build_release.py --version 0.1.0 --rom baserom.gba \\
         --gba-elf path/to/pokeemerald.elf
@@ -96,6 +96,7 @@ def main() -> None:
 
     if not args.skip_make:
         run((args.make.split() if args.make else ["make"]) + ["release"], cwd=PORT)
+    DIST.mkdir(parents=True, exist_ok=True)
     recipe = DIST / "emerald3ds.recipe"
     if not args.skip_recipe:
         run([sys.executable, ROOT / "tools/gen_recipe.py", "--romfs", PORT / "romfs", "--rom", args.rom,

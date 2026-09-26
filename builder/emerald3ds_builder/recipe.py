@@ -65,7 +65,7 @@ class Recipe:
     @classmethod
     def from_bytes(cls, data: bytes) -> "Recipe":
         if data[:8] != MAGIC:
-            raise RecipeError("not an Pokémon Emerald 3Ds Dual Screen recipe")
+            raise RecipeError("not a Pokémon Emerald 3Ds Dual Screen recipe")
         (size,) = struct.unpack_from("<I", data, 8)
         meta = json.loads(lzma.decompress(data[12:12 + size]))
         if meta.get("schema") != SCHEMA:

@@ -15,7 +15,7 @@ What fails the audit:
 * files larger than 1 MiB that are not listed in the allowlist;
 * media files (images, audio, tile data) with no provenance entry;
 * absolute paths of a local machine, tokens and private keys;
-* anything that looks like a GBA ROM (header, logo) or an Pokémon Emerald 3Ds Dual Screen data pack;
+* anything that looks like a GBA ROM (header, logo) or a Pokémon Emerald 3Ds Dual Screen data pack;
 * third_party/ directories without a licence and a provenance entry;
 * any pattern of the local denylist (`.public-denylist`, never versioned);
 * with --rom: any file that contains a run of the ROM's own bytes.
@@ -93,6 +93,7 @@ class Allow:
     media: dict[str, str] = field(default_factory=dict)
     local_paths: set[str] = field(default_factory=set)
     skip: list[str] = field(default_factory=list)
+    runtime: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path | None) -> "Allow":
@@ -102,7 +103,8 @@ class Allow:
         return cls(large=set(data.get("large", {}).get("paths", [])),
                    media={k: v for k, v in data.get("media", {}).items()},
                    local_paths=set(data.get("local_paths", {}).get("paths", [])),
-                   skip=list(data.get("skip", {}).get("globs", [])))
+                   skip=list(data.get("skip", {}).get("globs", [])),
+                   runtime=list(data.get("runtime", {}).get("globs", [])))
 
     def matches(self, patterns, path: str) -> bool:
         return any(fnmatch.fnmatchcase(path, p) for p in patterns)
@@ -202,7 +204,11 @@ def audit(entries, allow: Allow, denylist, rom_index: RomIndex | None,
                 third_party_dirs.add("/".join(path.parts[:idx + 2]))
 
         data = read()
-        if len(data) > MAX_BYTES and name not in allow.large:
+        # Unmodified third-party runtime (the bundled Python, Tk, Pillow): its
+        # size, its strings and its generic constant tables are not ours to
+        # judge; the checks for a ROM, a data pack or a secret still apply.
+        runtime = allow.matches(allow.runtime, name)
+        if len(data) > MAX_BYTES and not allow.matches(allow.large, name) and not runtime:
             findings.append(Finding(name, "too-large", "%d bytes" % len(data)))
         if suffix in MEDIA_SUFFIXES and context == "repo" and not allow.matches(allow.media, name):
             findings.append(Finding(name, "media-without-provenance"))
@@ -223,7 +229,7 @@ def audit(entries, allow: Allow, denylist, rom_index: RomIndex | None,
         for rx, label in SECRETS:
             if rx.search(data):
                 findings.append(Finding(name, "secret", label))
-        for rx in denylist:
+        for rx in ([] if runtime else denylist):
             if rx.search(data) or rx.search(name.encode("utf-8")):
                 findings.append(Finding(name, "denylist", "(local pattern)"))
                 break
@@ -235,7 +241,7 @@ def audit(entries, allow: Allow, denylist, rom_index: RomIndex | None,
                 size = int.from_bytes(data[8:12], "little")
                 scanned = lzma.decompress(data[12:12 + size]) + lzma.decompress(data[12 + size:])
             copied = rom_index.copied_bytes(scanned)
-            if copied > ROM_TOLERANCE:
+            if copied > ROM_TOLERANCE and not runtime:
                 findings.append(Finding(name, "rom-content", "%d bytes match the ROM" % copied))
             elif copied:
                 print("release_audit: note: %s shares %d incidental bytes with the ROM" % (name, copied))

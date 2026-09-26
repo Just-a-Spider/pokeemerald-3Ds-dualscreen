@@ -9,7 +9,8 @@ temporary directory:
   streams, each checked against its CRC);
 * layouts.json and every map.json are read back from the ROM's own MapLayout
   and MapHeader structures, whose offsets the recipe names;
-* metatiles.h and headers.h are reduced to the lines the generators parse.
+* metatiles.h, headers.h and metatile_behaviors.h are reduced to the lines
+  the generators parse.
 """
 
 from __future__ import annotations
@@ -22,6 +23,9 @@ from .errors import BuilderError
 from .recipe import Recipe, build_entry
 
 ROM_BASE = 0x08000000
+# BgEvent kinds 0-4 are signs (read from any side or from one); the others are
+# hidden items and secret bases.
+BG_EVENT_SIGN_LAST = 4
 
 
 def _ptr(rom: bytes, off: int) -> int | None:
@@ -53,6 +57,7 @@ def read_map(rom: bytes, off: int, meta: dict) -> dict:
         "layout": layouts[layout_id - 1]["id"] if 0 < layout_id <= len(layouts) else "LAYOUT_NONE",
         "map_type": meta["map_types"].get(str(map_type), "MAP_TYPE_NONE"),
         "warp_events": [],
+        "bg_events": [],
         "connections": [],
     }
     if events is not None:
@@ -63,6 +68,12 @@ def read_map(rom: bytes, off: int, meta: dict) -> dict:
             out["warp_events"].append({"x": x, "y": y, "elevation": elevation,
                                        "dest_map": maps_by_group.get((group, num), "MAP_NONE"),
                                        "dest_warp_id": warp_id})
+        bg_count = rom[events + 3]
+        bgs = _ptr(rom, events + 16)
+        for i in range(bg_count):
+            x, y, elevation, kind = struct.unpack_from("<HHBB", rom, bgs + i * 12)
+            if kind <= BG_EVENT_SIGN_LAST:
+                out["bg_events"].append({"type": "sign", "x": x, "y": y, "elevation": elevation})
     if connections is not None:
         count = struct.unpack_from("<i", rom, connections)[0]
         table = _ptr(rom, connections + 4)
@@ -120,6 +131,14 @@ def build_tree(rom: bytes, recipe: Recipe, root: Path, progress=None) -> None:
     (inc / "headers.h").write_text(
         "".join("const struct Tileset %s =\n{\n    .metatiles = %s,\n};\n\n" % (n, m)
                 for n, m in meta["headers_h"]),
+        encoding="utf-8")
+    behaviors = meta.get("metatile_behaviors")
+    if not behaviors:
+        raise BuilderError("This release's recipe does not name the metatile behaviours.")
+    const = root / "include" / "constants"
+    const.mkdir(parents=True, exist_ok=True)
+    (const / "metatile_behaviors.h").write_text(
+        "enum {\n" + "".join("    %s = %d,\n" % (n, v) for n, v in behaviors) + "};\n",
         encoding="utf-8")
     if progress:
         progress(1.0)
