@@ -56,7 +56,7 @@ interface on the bottom screen that replaces the START menu.
 The modelled part of the voxel overworld is still limited. Only some
 buildings, trees, signposts and relief are modelled today; **most of the map
 and nearly all interiors are still shown flat**. More areas will be modelled
-as the project moves forward. The classic 2D view is always available.
+as the project moves forward.
 
 ## About this repository
 
