@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — first public version
+## 0.1 — 2026-09-26 — first public version
 
 - Native ARM11 port of pokeemerald for Nintendo 3DS: GPU compositor at
   native 400x240, NDSP audio, touch and Circle Pad input, SD saves.
@@ -8,6 +8,8 @@
   card, Pokédex, PokéNav, save, options) and touch battle menus.
 - Optional voxel overworld with buildings, trees, signposts and terrain relief
   modelled from each map's own art, fixed-sun lighting and cast shadows.
+  The modelled part is still limited: most of the map and nearly all
+  interiors are shown flat for now.
 - Game data outside the executable: embedded (development), loose files or a
   single `emerald3ds.pak` with ABI and integrity checks.
 - Pokémon Emerald 3Ds Dual Screen Builder: generates the data pack from the player's own ROM and
