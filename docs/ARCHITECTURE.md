@@ -1,0 +1,100 @@
+# Architecture
+
+Pokémon Emerald 3Ds Dual Screen runs the pokeemerald game code natively on the 3DS's ARM11. The
+game keeps its own main loop (`AgbMain`), its GBA register model and its data;
+the port supplies what the GBA hardware did, through a small bridge.
+
+```
+            game translation units                     native translation units
+   (pokeemerald src/, data/ + port bridge files)        (3ds_port/src, libctru)
+ ┌──────────────────────────────────────────────┐    ┌──────────────────────────────┐
+ │ AgbMain, tasks, sprites, scripts, battles    │    │ main_3ds.c   process, heaps   │
+ │   │ GBA registers, VRAM, OAM, palettes (RAM) │───▶│ 3ds_video.c  GPU compositor   │
+ │   │ m4a / MP2K mixer (portable float path)   │───▶│ 3ds_audio.c  NDSP queue       │
+ │   │ #ifdef PORT_BRIDGE hooks                 │    │ 3ds_input.c  HID, touch       │
+ │   ▼                                          │    │ 3ds_data.c   romfs/loose/pak  │
+ │ 3ds_assets.c  3ds_map_loader.c               │───▶│ 3ds_log.c    SD log (thread)  │
+ │ 3ds_script_loader.c  3ds_compat.c (saves)    │    │ ctr_voxel.c  Citro3D voxel    │
+ │ 3ds_bottom_ui.c  voxel/*.c (game side)       │    │ 3ds_bottom_screen.c           │
+ └──────────────────────────────────────────────┘    └──────────────────────────────┘
+```
+
+## Two kinds of translation unit
+
+- **Game units** (`build/root/**`, `build/bridge/**`, `build/voxel/**`) are the
+  decompilation plus the port's bridge files. They compile with
+  `-DPORT_BRIDGE -DPLATFORM_3DS -DPORTABLE -DMODERN=1` and see the headers in
+  `3ds_port/compat/` (`port_platform.h`, `port_log.h`). They never include
+  libctru.
+- **Native units** (`build/*.o`) are the backend: libctru, Citro2D/Citro3D,
+  threads, files. They compile with `-Werror` and never see game headers.
+
+The boundary is plain C calls declared in `3ds_port/include/`.
+
+Everything builds in **ARM state**: GCC has no Thumb-1 hard-float ABI on
+ARMv6K and libctru is hard-float. The places where the game sets bit 0 on
+function pointers (callbacks, native script commands) are guarded for
+`PLATFORM_3DS`.
+
+## Frame
+
+`AgbMain` runs forever. Every iteration ends in `WaitForVBlank` →
+`VBlankIntrWait`, where the backend:
+
+1. runs the VBlank handler (m4a mixes one frame; the frame goes to NDSP);
+2. latches the GBA registers, OAM and palettes and presents: the compositor
+   decodes changed tiles into an RGBA5551 atlas and draws BG/OBJ layers with
+   the PICA200 at native 400x240 on the top screen; the voxel overworld, when
+   active, draws the field in 3D from the live map state;
+3. scans HID and touch; the bottom-screen UI draws and turns touches into
+   game input.
+
+The logical display stays GBA-sized for game logic; the field of view is
+widened (`FIELD_VIEW_*`) and screens staged as one GBA picture (title,
+intro, credits, battle, region map) are composed centred with margins from
+their own art (`3ds_port/compat/ctr_gba_*.h`).
+
+## Memory
+
+The linear heap is 8 MiB (`__ctru_linear_heap_size`): the 1024x1024 tile atlas,
+Citro3D command buffers, the voxel staging VBO and one metatile atlas. VRAM is
+claimed as fixed arenas at start-up (`voxel_arena.c`) because variable-size
+allocation fragmented it. The CPU never writes VRAM on hardware; textures are
+filled from linear buffers with `C3D_SyncTextureCopy`.
+
+## Data outside the executable
+
+The 3DSX carries code and engine files only; game data comes from
+`CtrData_*` (`3ds_port/src/3ds_data.c`): the RomFS of a development build, loose
+files under `sdmc:/3ds/emerald3ds/devdata/`, or `sdmc:/3ds/emerald3ds/emerald3ds.pak`.
+How each kind of data reaches the game (INCBIN stubs, map descriptors, bundled
+regions, the `.gamedata` section) is described in
+[ASSET_PIPELINE.md](ASSET_PIPELINE.md).
+
+## Bottom screen
+
+The bottom screen replaces the START menu (`3ds_bottom_ui.c`,
+`3ds_bottom_screen.c`): map, party, bag, trainer card, Pokédex, PokéNav, save
+and options. Actions that need the game's own logic (using an item, switching
+a Pokémon, field moves) run the original menu hidden while the top screen
+holds its last frame, driven by injected key presses; what that menu shows is
+read back and drawn as buttons. In battle the column gives way to the action
+and move menus.
+
+## Voxel overworld
+
+`3ds_port/src/voxel/`: the map, camera, atlas and mesh modules are game units
+(they read `gMapHeader` and the metatiles); `ctr_voxel.c` owns the Citro3D
+objects. Chunks are built in slices across frames, uploads per frame are
+capped by the GX queue (32 entries), building textures stream from a worker
+thread, and a fixed sun with baked shade and cast sprite shadows grades the
+scene (`VOXEL_LIGHTING`). Buildings, trees, signposts and drawn terrain relief
+are modelled on the host from each map's own art (`3ds_port/scripts/gen_voxel_*.py`)
+and read at runtime from `voxel/*.bin`.
+
+## Saves and logs
+
+The 128 KiB flash image is mirrored in RAM and written range by range to
+`sdmc:/3ds/emerald3ds/emerald3ds.sav`. The log goes to
+`sdmc:/3ds/emerald3ds/port.log` from a background thread, because SD writes on
+the render thread cost 50–500 ms on hardware.

@@ -1,0 +1,19 @@
+# Explicit exceptions for tools/release_audit.py. Every entry needs a reason.
+
+[large]
+# Files over 1 MiB that are allowed. None today.
+paths = []
+
+[media]
+# Images and binary assets allowed in the repository, with their provenance.
+"3ds_port/assets/voxel/trees/tree_crown.png" = "original art by the Pokemon Emerald 3Ds Dual Screen author"
+"3ds_port/assets/voxel/trees/tree_trunk.png" = "original art by the Pokemon Emerald 3Ds Dual Screen author"
+"3ds_port/assets/voxel/trees/tree_small_crown.png" = "original art by the Pokemon Emerald 3Ds Dual Screen author"
+"3ds_port/assets/voxel/trees/tree_small_trunk.png" = "original art by the Pokemon Emerald 3Ds Dual Screen author"
+
+[local_paths]
+# Files allowed to mention a local path (documentation of the audit itself).
+paths = ["tools/release_audit.py"]
+
+[skip]
+globs = []

@@ -1,0 +1,96 @@
+#ifndef CTR_VIDEO_H
+#define CTR_VIDEO_H
+#include <stdbool.h>
+#include <stdint.h>
+
+#define CTR_GAME_WIDTH 400
+#define CTR_GAME_HEIGHT 240
+
+/*
+ * A GBA stage keeps the native pixel grid: the 240x160 picture sits 1:1 in the
+ * middle of the 400x240 screen, and the compositor fills the space around it
+ * from the picture's own art (see DrawStageBg in 3ds_video.c).
+ */
+#define CTR_STAGE_X ((CTR_GAME_WIDTH - 240) / 2)
+#define CTR_STAGE_Y ((CTR_GAME_HEIGHT - 160) / 2)
+/* The battle scene: centred across, resting on the bottom edge. */
+#define CTR_BATTLE_X CTR_STAGE_X
+#define CTR_BATTLE_Y (CTR_GAME_HEIGHT - 160)
+/*
+ * The battle scene itself is magnified: the middle of its bottom edge (GBA
+ * 120,112) sits on screen (200,192), on top of the 1:1 text box. At 1.5 the
+ * tile grid still lands on whole screen pixels.
+ */
+#define CTR_BATTLE_ZOOM 1.4f
+
+typedef struct
+{
+    const uint8_t *vram;
+    const uint16_t *palette;
+    const uint16_t *oam;
+    const uint16_t *regs;
+} CtrVideoMemory;
+
+typedef struct
+{
+    uint32_t frames, tiles, uploads, sprites, errors, stereo;
+    uint16_t display;
+    float fps, cpuMs, gpuMs, waitMs;
+} CtrVideoStats;
+
+bool CtrVideo_Init(void);
+void CtrVideo_Shutdown(void);
+void CtrVideo_Bind(CtrVideoMemory memory);
+void CtrVideo_Present(void);
+/* Keep showing the last top-screen frame instead of the game's screen. */
+void CtrVideo_HoldTop(bool hold);
+/* OAM entries belonging to field weather, tagged while BuildOamBuffer sorts sprites. */
+void CtrVideo_ClearVoxelWeatherOam(void);
+void CtrVideo_MarkVoxelWeatherOam(unsigned first, unsigned end);
+void CtrVideo_NotifyTilesetAnimWrite(const void *dest, unsigned bytes);
+const uint8_t *CtrVideo_GetBgVram(void);
+/* Frees the 2D compositor's 3D depth planes before the next frame, for the
+ * overworld when it cannot place an atlas. */
+void CtrVideo_RequestPlaneRelease(void);
+/*
+ * Whether the frames that follow are a GBA stage: a screen composed as one
+ * 240x160 picture (intro, title, credits), shown 1:1 in the middle of the top
+ * screen with the space around it filled from its own art. See docs/ARCHITECTURE.md.
+ */
+void CtrVideo_SetStage(bool stage);
+/*
+ * Whether the frames that follow are a GBA screen shown centred (the fly map, the Town Map):
+ * 1:1 at the stage position, with only the layers that wrap on the GBA and
+ * sprites reaching into the margins.
+ */
+void CtrVideo_SetCentred(bool centred);
+/*
+ * Whether the frames that follow are the battle scene: the 240x160 picture 1:1
+ * at (CTR_BATTLE_X, CTR_BATTLE_Y), so that its text box lies on the bottom
+ * edge of the top screen, the text box stretched to the full width and the
+ * scene above and beside it carried on from its own layers. See docs/ARCHITECTURE.md.
+ */
+void CtrVideo_SetBattle(bool battle);
+/*
+ * Per-scanline values of background scroll registers for the next frame: reg
+ * is the offset from BG0HOFS, wide means two registers per line (32-bit DMA),
+ * values holds one unit per line. NULL values turns it off.
+ */
+void CtrVideo_SetLineScroll(unsigned reg, bool wide, const void *values, unsigned lines);
+const CtrVideoStats *CtrVideo_GetStats(void);
+void CtrScene_Init(void);
+void CtrScene_Update(void);
+unsigned CtrScene_Mode(void);
+void CtrCursor_Init(const void *tiles, const uint16_t *palette);
+void CtrCursor_Update(bool visible);
+void CtrCursor_GetPosition(int *x, int *y);
+
+/* Pure, SDK-free address/format helpers, also used by host regression tests. */
+uint32_t CtrVideo_TextMapOffset(unsigned x, unsigned y, unsigned size);
+uint32_t CtrVideo_Texel(unsigned x, unsigned y, unsigned width);
+uint32_t CtrVideo_RGBA8(uint16_t color, bool opaque);
+uint16_t CtrVideo_RGBA5551(uint16_t color);
+unsigned CtrVideo_ObjTile(unsigned base, unsigned x, unsigned y,
+                          unsigned width, bool color256, bool mapping1d);
+int32_t CtrVideo_AffineReference(uint32_t value);
+#endif
