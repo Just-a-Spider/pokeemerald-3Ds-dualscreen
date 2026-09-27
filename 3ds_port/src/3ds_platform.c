@@ -74,6 +74,7 @@ bool CtrPlatform_Init(void)
         CtrLog_Write(CTR_LOG_ERROR, "platform init: filesystem failed");
         return false;
     }
+    CtrSettings_Load();
     if (!CtrData_Init())
         CtrPlatform_ShowDataError(CtrData_ErrorTitle(), CtrData_ErrorDetail());
     if (!CtrVideo_Init())

@@ -346,6 +346,19 @@ static void PalSymbol(const void *src, Pal *dst, int count)
 /* The screens of the button column, top to bottom. */
 enum { SCR_MAP, SCR_POKEMON, SCR_BAG, SCR_CARD, SCR_POKEDEX, SCR_POKENAV, SCR_SAVE, SCR_OPTION, SCR_COUNT };
 
+/*
+ * The game's six options, then the port's own: the voxel overworld, off by
+ * default and kept in settings.txt rather than in the save (3ds_settings.c).
+ * Only a build with the voxel renderer has that row.
+ */
+enum { OPT_TEXT_SPEED, OPT_BATTLE_SCENE, OPT_BATTLE_STYLE, OPT_SOUND, OPT_BUTTON_MODE, OPT_FRAME,
+       OPT_VOXEL, OPT_VOXEL_PITCH, OPT_VOXEL_ZOOM, OPTION_ROWS };
+#if CTR_VOXEL_ENABLED
+#define OPTION_SHOWN OPTION_ROWS
+#else
+#define OPTION_SHOWN OPT_VOXEL
+#endif
+
 typedef struct
 {
     u8 *tiles;
@@ -1065,7 +1078,7 @@ typedef struct
     u8 dexFlags[DEX_ROWS];           /* 1 seen, 2 caught */
     /* Save and options. */
     u8 saveStep, canSave;
-    u8 options[6];
+    u8 options[OPTION_ROWS];
     /* Battle. */
     u8 isDouble, safari, cursor, battler;
     BattlerView battlers[MAX_BATTLERS_COUNT];
@@ -1122,9 +1135,11 @@ enum
     HIT_TARGET_RIGHT,
     HIT_TARGET_OK,
     HIT_MAP = 0x90,
-    HIT_OPTION = 0xA0,     /* + option row; +8 for the left arrow */
     HIT_MENU = 0xB0,       /* + game menu entry */
+    HIT_OPTION = 0xC0,     /* + option row; +HIT_OPTION_BACK for the left arrow */
 };
+/* More than there are option rows, so a row and a left arrow never share an id. */
+#define HIT_OPTION_BACK 16
 
 typedef struct { s16 x, y, w, h; u8 id; } Hit;
 static Hit sHits[64];
@@ -1929,6 +1944,9 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
             s->options[3] = gSaveBlock2Ptr->optionsSound;
             s->options[4] = gSaveBlock2Ptr->optionsButtonMode;
             s->options[5] = gSaveBlock2Ptr->optionsWindowFrameType;
+            s->options[OPT_VOXEL] = CtrSettings_Voxel();
+            s->options[OPT_VOXEL_PITCH] = CtrSettings_VoxelPitch();
+            s->options[OPT_VOXEL_ZOOM] = CtrSettings_VoxelZoom();
             break;
         }
         break;
@@ -2683,6 +2701,13 @@ static const u8 *OptionValue(int row, u8 value)
     case 2: return value ? gText_BattleStyleSet : gText_BattleStyleShift;
     case 3: return value ? gText_SoundStereo : gText_SoundMono;
     case 4: return value == 0 ? gText_ButtonTypeNormal : value == 1 ? gText_ButtonTypeLR : gText_ButtonTypeLEqualsA;
+    case OPT_VOXEL: return value ? gText_BattleSceneOn : gText_BattleSceneOff;
+    case OPT_VOXEL_PITCH: return Number(value, 2, STR_CONV_MODE_LEFT_ALIGN);
+    case OPT_VOXEL_ZOOM:
+        StringCopy(frame, Number(value, 3, STR_CONV_MODE_LEFT_ALIGN));
+        frame[StringLength(frame) + 1] = EOS;
+        frame[StringLength(frame)] = CHAR_PERCENT;
+        return frame;
     default:
         StringCopy(frame, gText_FrameType);
         StringAppend(frame, Number(value + 1, 2, STR_CONV_MODE_LEFT_ALIGN));
@@ -2715,13 +2740,25 @@ static void DrawWindowFrame(u8 type, int x, int y, int wt, int ht)
 static void DrawOptions(const ViewState *s)
 {
     static const u8 left[] = {CHAR_LEFT_ARROW, EOS}, right[] = {CHAR_RIGHT_ARROW, EOS};
-    const u8 *names[6] = {gText_TextSpeed, gText_BattleScene, gText_BattleStyle, gText_Sound, gText_ButtonMode,
-                          gText_Frame};
+    const u8 *names[OPTION_ROWS] = {gText_TextSpeed, gText_BattleScene, gText_BattleStyle, gText_Sound,
+                                    gText_ButtonMode, gText_Frame, Ascii("VOXEL 3D"), Ascii("3D ANGLE"),
+                                    Ascii("3D ZOOM")};
+    /* The frame stays last, above its preview. */
+    static const u8 order[OPTION_ROWS] = {OPT_TEXT_SPEED, OPT_BATTLE_SCENE, OPT_BATTLE_STYLE, OPT_SOUND,
+                                          OPT_BUTTON_MODE, OPT_VOXEL, OPT_VOXEL_PITCH, OPT_VOXEL_ZOOM,
+                                          OPT_FRAME};
+    /* The camera rows only mean something with the voxel overworld on; with
+     * them there is no room left for the frame's preview. */
+    bool8 camera = OPTION_SHOWN > OPT_VOXEL && s->options[OPT_VOXEL];
+    const int pitch = OPTION_SHOWN > 6 ? 26 : 30;
 
-    for (int i = 0; i < 6; ++i)
+    for (int slot = 0, row = 0; row < OPTION_ROWS; ++row)
     {
-        int y = 4 + i * 30;
-        bool8 on = s->pressed == HIT_OPTION + i || s->pressed == HIT_OPTION + 8 + i;
+        int i = order[row], y;
+        if (i >= OPTION_SHOWN || ((i == OPT_VOXEL_PITCH || i == OPT_VOXEL_ZOOM) && !camera))
+            continue;
+        y = 4 + slot++ * pitch;
+        bool8 on = s->pressed == HIT_OPTION + i || s->pressed == HIT_OPTION + HIT_OPTION_BACK + i;
 
         DrawBoxEx(BOX_MENU, 0, y, 30, 3, on);
         DrawStr(&sSmall, names[i], 10, y + 6, LABEL_FG(on), LABEL_SH(on));
@@ -2729,10 +2766,12 @@ static void DrawOptions(const ViewState *s)
         DrawStrCentered(&sSmall, OptionValue(i, s->options[i]), 170, y + 6, on ? TXT_WHITE : TXT_RED,
                         on ? TXT_DARK : TXT_LRED);
         DrawStr(&sSmall, right, 222, y + 6, LABEL_FG(on), LABEL_SH(on));
-        AddHit(0, y, 136, 24, HIT_OPTION + 8 + i);
+        AddHit(0, y, 136, 24, HIT_OPTION + HIT_OPTION_BACK + i);
         AddHit(136, y, 104, 24, HIT_OPTION + i);
     }
     /* What the chosen frame looks like. */
+    if (camera)
+        return;
     DrawWindowFrame(s->options[5], 24, 196, 24, 3);
     DrawStrCentered(&sNormal, OptionValue(5, s->options[5]), CW / 2, 200, TXT_DARK, TXT_LIGHT);
 }
@@ -3438,11 +3477,30 @@ static void ActivateBag(u8 id, u8 mode)
 
 static void ActivateOption(u8 id)
 {
-    bool8 back = id >= HIT_OPTION + 8;
-    u8 row = (id - HIT_OPTION) & 7;
-    static const u8 counts[6] = {3, 2, 2, 2, 3, WINDOW_FRAMES_COUNT};
+    bool8 back = id >= HIT_OPTION + HIT_OPTION_BACK;
+    u8 row = (id - HIT_OPTION) % HIT_OPTION_BACK;
+    static const u8 counts[OPTION_ROWS] = {3, 2, 2, 2, 3, WINDOW_FRAMES_COUNT, 2, 0, 0};
     u8 value, step = back ? counts[row] - 1 : 1;
 
+    if (row >= OPTION_SHOWN)
+        return;
+    if (row == OPT_VOXEL)
+    {
+        CtrSettings_SetVoxel(!CtrSettings_Voxel());
+        PlaySE(SE_SELECT);
+        return;
+    }
+    if (row == OPT_VOXEL_PITCH || row == OPT_VOXEL_ZOOM)
+    {
+        if (!CtrSettings_Voxel())
+            return;
+        if (row == OPT_VOXEL_PITCH)
+            CtrSettings_StepVoxelPitch(back ? -1 : 1);
+        else
+            CtrSettings_StepVoxelZoom(back ? -1 : 1);
+        PlaySE(SE_SELECT);
+        return;
+    }
     switch (row)
     {
     case 0: value = gSaveBlock2Ptr->optionsTextSpeed; break;
@@ -3547,7 +3605,7 @@ static void Activate(u8 id, u8 mode)
         }
         break;
     case SCR_OPTION:
-        if (id >= HIT_OPTION && id < HIT_OPTION + 16)
+        if (id >= HIT_OPTION && id < HIT_OPTION + 2 * HIT_OPTION_BACK)
             ActivateOption(id);
         break;
     }

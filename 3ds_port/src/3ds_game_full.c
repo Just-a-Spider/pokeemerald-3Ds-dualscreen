@@ -10,6 +10,7 @@
 
 #include "global.h"
 #include "main.h"
+#include "overworld.h"
 #include "gba/flash_internal.h"
 #include "gpu_regs.h"
 #include "cgb_audio.h"
@@ -224,6 +225,13 @@ void CtrGame_VBlank(void)
 uint32_t CtrGame_Frames(void) { return sFrames; }
 uint32_t CtrGame_APresses(void) { return 0; }
 uint32_t CtrGame_Checks(void) { return 0; }
+
+bool CtrGame_IsOverworld(void)
+{
+    if (gMapHeader.mapLayout == NULL || gSaveBlock1Ptr == NULL)
+        return false;
+    return gMain.callback2 == CB2_Overworld || gMain.callback2 == CB2_OverworldBasic;
+}
 
 /* AgbMain never returns, so a reset request restarts the process state here. */
 void CtrGame_Frame(void)

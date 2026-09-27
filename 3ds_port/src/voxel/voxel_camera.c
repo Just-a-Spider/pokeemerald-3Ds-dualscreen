@@ -4,6 +4,7 @@
 
 #include <math.h>
 
+#include "3ds_platform.h"
 #include "voxel_camera.h"
 #include "voxel_world.h"
 
@@ -37,7 +38,8 @@ static void Place(VoxelCamera *cam)
     cam->targetY = 0.0f;
 }
 
-/* Wider maps are framed from further away, up to a fixed ceiling. */
+/* Wider maps are framed from further away, up to a fixed ceiling. The pitch
+ * and the zoom are the player's (bottom-screen options; 40 degrees, 100%). */
 static void AdaptDistance(VoxelCamera *cam)
 {
     int mapW = 0, mapH = 0;
@@ -47,7 +49,8 @@ static void AdaptDistance(VoxelCamera *cam)
     scale = (float)(mapW > mapH ? mapW : mapH) * 0.2f;
     if (scale > 5.0f)
         scale = 5.0f;
-    cam->distance = 8.0f + scale;
+    cam->distance = (8.0f + scale) * 100.0f / (float)CtrSettings_VoxelZoom();
+    cam->pitch = (float)CtrSettings_VoxelPitch();
 }
 
 void VoxelCamera_Snap(VoxelCamera *cam, float playerWorldX, float playerWorldZ)

@@ -9750,17 +9750,19 @@ index 171678cddbf9ef41a725fc8b4c7f4cdc3be1fa18..9d8c85d5cd8c3b47465ee3e6498be9cd
      ClearPokemonCrySongs();
  }
 diff --git a/src/sprite.c b/src/sprite.c
-index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76cfa4742d 100644
+index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..748b81603c1b91653b0702e09f8ec9716aca721d 100644
 --- a/src/sprite.c
 +++ b/src/sprite.c
-@@ -2,6 +2,14 @@
+@@ -2,6 +2,16 @@
  #include "sprite.h"
  #include "main.h"
  #include "palette.h"
++#if defined(PLATFORM_3DS)
++#include "3ds_video.h"
++#endif
 +#if defined(PLATFORM_3DS) && CTR_VOXEL_ENABLED
 +#include "field_weather.h"
 +#include "constants/weather.h"
-+#include "3ds_video.h"
 +#endif
 +#ifdef PORT_BRIDGE
 +#include "port_platform.h"
@@ -9768,7 +9770,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
  
  #define MAX_SPRITE_COPY_REQUESTS 64
  
-@@ -291,6 +299,22 @@ EWRAM_DATA s16 gSpriteCoordOffsetY = 0;
+@@ -291,6 +301,22 @@ EWRAM_DATA s16 gSpriteCoordOffsetY = 0;
  EWRAM_DATA struct OamMatrix gOamMatrices[OAM_MATRIX_COUNT] = {0};
  EWRAM_DATA bool8 gAffineAnimsDisabled = FALSE;
  
@@ -9791,7 +9793,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
  void ResetSpriteData(void)
  {
      ResetOamRange(0, 128);
-@@ -479,16 +503,77 @@ void CopyMatricesToOamBuffer(void)
+@@ -479,16 +505,84 @@ void CopyMatricesToOamBuffer(void)
      }
  }
  
@@ -9848,6 +9850,9 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
      u8 i = 0;
      u8 oamIndex = 0;
  
++#if defined(PLATFORM_3DS)
++    CtrVideo_ClearOamAnchors();
++#endif
 +#if defined(PLATFORM_3DS) && CTR_VOXEL_ENABLED
 +    CtrVideo_ClearVoxelWeatherOam();
 +#endif
@@ -9860,6 +9865,10 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
 +        {
 +            u8 first = oamIndex;
 +            bool8 full = AddSpriteToOamBuffer(sprite, &oamIndex);
++#if defined(PLATFORM_3DS)
++            CtrVideo_SetOamAnchor(first, oamIndex, sprite->y + sprite->y2 + sprite->centerToCornerVecY
++                                  + (sprite->coordOffsetEnabled ? gSpriteCoordOffsetY : 0));
++#endif
 +#if defined(PLATFORM_3DS) && CTR_VOXEL_ENABLED
 +            if (IsVoxelWeatherSprite(sprite))
 +                CtrVideo_MarkVoxelWeatherOam(first, oamIndex);
@@ -9871,7 +9880,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
          i++;
      }
  
-@@ -562,8 +647,19 @@ u8 CreateSpriteAt(u8 index, const struct SpriteTemplate *template, s16 x, s16 y,
+@@ -562,8 +656,19 @@ u8 CreateSpriteAt(u8 index, const struct SpriteTemplate *template, s16 x, s16 y,
      if (template->tileTag == TAG_NONE)
      {
          s16 tileNum;
@@ -9892,7 +9901,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
          if (tileNum == -1)
          {
              ResetSprite(sprite);
-@@ -622,7 +718,13 @@ void DestroySprite(struct Sprite *sprite)
+@@ -622,7 +727,13 @@ void DestroySprite(struct Sprite *sprite)
          if (!sprite->usingSheet)
          {
              u16 i;
@@ -9907,7 +9916,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
              for (i = sprite->oam.tileNum; i < tileEnd; i++)
                  FREE_SPRITE_TILE(i);
          }
-@@ -791,6 +893,10 @@ void ProcessSpriteCopyRequests(void)
+@@ -791,6 +902,10 @@ void ProcessSpriteCopyRequests(void)
          while (sSpriteCopyRequestCount > 0)
          {
              CpuCopy16(sSpriteCopyRequests[i].src, sSpriteCopyRequests[i].dest, sSpriteCopyRequests[i].size);
@@ -9918,7 +9927,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
              sSpriteCopyRequestCount--;
              i++;
          }
-@@ -803,9 +909,17 @@ void RequestSpriteFrameImageCopy(u16 index, u16 tileNum, const struct SpriteFram
+@@ -803,9 +918,17 @@ void RequestSpriteFrameImageCopy(u16 index, u16 tileNum, const struct SpriteFram
  {
      if (sSpriteCopyRequestCount < MAX_SPRITE_COPY_REQUESTS)
      {
@@ -9938,7 +9947,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
          sSpriteCopyRequestCount++;
      }
  }
-@@ -814,6 +928,9 @@ void RequestSpriteCopy(const u8 *src, u8 *dest, u16 size)
+@@ -814,6 +937,9 @@ void RequestSpriteCopy(const u8 *src, u8 *dest, u16 size)
  {
      if (sSpriteCopyRequestCount < MAX_SPRITE_COPY_REQUESTS)
      {
@@ -9948,7 +9957,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
          sSpriteCopyRequests[sSpriteCopyRequestCount].src = src;
          sSpriteCopyRequests[sSpriteCopyRequestCount].dest = dest;
          sSpriteCopyRequests[sSpriteCopyRequestCount].size = size;
-@@ -1485,7 +1602,11 @@ void SetOamMatrixRotationScaling(u8 matrixNum, s16 xScale, s16 yScale, u16 rotat
+@@ -1485,7 +1611,11 @@ void SetOamMatrixRotationScaling(u8 matrixNum, s16 xScale, s16 yScale, u16 rotat
  
  u16 LoadSpriteSheet(const struct SpriteSheet *sheet)
  {
@@ -9961,7 +9970,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
  
      if (tileStart < 0)
      {
-@@ -1493,8 +1614,12 @@ u16 LoadSpriteSheet(const struct SpriteSheet *sheet)
+@@ -1493,8 +1623,12 @@ u16 LoadSpriteSheet(const struct SpriteSheet *sheet)
      }
      else
      {
@@ -9976,7 +9985,7 @@ index 708a3e7fdf5fe77dff62d0e2d908b9e9e089f39a..3d89377589aa78cba5ac584a7bbd9c76
          return (u16)tileStart;
      }
  }
-@@ -1617,6 +1742,9 @@ void LoadSpritePalettes(const struct SpritePalette *palettes)
+@@ -1617,6 +1751,9 @@ void LoadSpritePalettes(const struct SpritePalette *palettes)
  
  void DoLoadSpritePalette(const u16 *src, u16 paletteOffset)
  {

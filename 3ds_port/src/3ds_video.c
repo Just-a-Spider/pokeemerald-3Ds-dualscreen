@@ -99,8 +99,40 @@ typedef struct
     uint32_t key, checked, paletteVersion;
     uint8_t bytes[64];
     uint32_t colors[8];
+    /* Bumped on every upload (new bytes or new palette), never reused. */
+    uint32_t serial;
     bool valid, visible;
 } Tile;
+static uint32_t sTileSerial;
+
+static uint32_t sOamAnchored[4];
+static int16_t sOamAnchor[128];
+
+void CtrVideo_ClearOamAnchors(void)
+{
+    memset(sOamAnchored, 0, sizeof(sOamAnchored));
+}
+
+void CtrVideo_SetOamAnchor(unsigned first, unsigned end, int y)
+{
+    if (end > 128) end = 128;
+    for (unsigned i = first; i < end; ++i)
+    {
+        sOamAnchored[i >> 5] |= 1u << (i & 31);
+        sOamAnchor[i] = (int16_t)y;
+    }
+}
+
+/* The OAM y (8 bits) moved by whole turns of 256 to lie nearest its sprite's
+ * true y: an entry of a sprite is never 128 lines from where it is anchored. */
+static int OamUnwrapY(unsigned index, int y)
+{
+    int anchor = sOamAnchor[index];
+
+    while (y - anchor > 128) y -= 256;
+    while (anchor - y > 128) y += 256;
+    return y;
+}
 
 #if CTR_VOXEL_ENABLED
 static uint32_t sVoxelWeatherOam[4];
@@ -202,6 +234,22 @@ static float sParallax, sLayerShift;
 /* Fixed horizontal placement of every layer, on top of the depth parallax.
  * Zero for the 2D compositor, which reproduces the GBA frame as it is. */
 static float sLayerOrigin;
+
+/*
+ * The text layer is a 32-column tilemap, so it only addresses the left 256px
+ * of the 400px viewport, and widening it does not fit in background VRAM (see
+ * the note on sStandardTextBox_WindowTemplates in src/menu.c). That is a
+ * limit on where the *game* can put a window, not on where this compositor can
+ * draw one: on the field BG0 carries nothing but windows, so it is drawn moved
+ * to where it belongs. The standard text box spans x=16..232 within the band,
+ * so its centre reaches the middle of the viewport at +76. The voxel overlay
+ * does the same (ComposeVoxelOverlay); sFieldUi asks for it in the 2D field.
+ */
+#define CTR_FIELD_UI_SHIFT 76.0f
+static bool sFieldUi;
+/* The 2D field this frame: its text backgrounds are drawn from layer
+ * textures kept up to date cell by cell (LayerRenderCells). */
+static bool sFieldLayers;
 
 /*
  * Composing the whole frame twice costs twice the CPU, which is a frame an Old
@@ -360,6 +408,7 @@ static int GetTileSlot(unsigned address, unsigned bank, bool color256)
              * separate GSP service call per tile costs hundreds of calls
              * per palette-animation frame without improving visibility. */
             tile->valid = true;
+            tile->serial = ++sTileSerial;
             ++sStats.uploads;
         }
         tile->paletteVersion = sPaletteVersion[paletteId];
@@ -1266,7 +1315,7 @@ static void LayersRelease(void)
  */
 static void LayersPrepare(void)
 {
-    unsigned want = LineBackgrounds() | (sStage ? TextBackgrounds() : 0);
+    unsigned want = LineBackgrounds() | (sStage || sFieldLayers ? TextBackgrounds() : 0);
 
     for (unsigned bg = 0; bg < 4; ++bg)
     {
@@ -1341,6 +1390,147 @@ static uint32_t LayerHash(unsigned bg)
     return hash;
 }
 
+/*
+ * The field's backgrounds, kept in their textures cell by cell.
+ *
+ * Walked tile by tile, the 2D field is three 400x240 layers, about 4700 quads
+ * a frame: 20 ms of CPU on an Old 3DS, so it never made 60 fps. Composed into
+ * textures it is a quad per layer, but the whole-layer hash would recompose
+ * all three every time a tile animates (water, flowers), since they share
+ * their tiles. So each cell keeps what was drawn in it - the upload serial of
+ * its tile (which covers the tile's bytes and palette) and its flips - and
+ * only the cells whose tile, tilemap entry or palette changed are cleared and
+ * drawn again: a row or a column as the camera moves, the animated tiles when
+ * they animate. A frame where most cells changed (a new map, a palette fade)
+ * is recomposed whole.
+ */
+#define LAYER_CELLS 4096
+static uint32_t sCellSig[4][LAYER_CELLS];
+static unsigned sCellControl[4];
+
+static bool LayerDrawable(unsigned bg);
+
+static bool LayerRenderCells(unsigned bg)
+{
+    static uint16_t dirty[LAYER_CELLS];
+    static int16_t cellSlot[LAYER_CELLS];
+    static uint16_t cellEntry[LAYER_CELLS];
+    static uint32_t memoStamp[1024], stamp;
+    static uint16_t memoEntry[1024];
+    static int16_t memoSlot[1024];
+    LayerTexture *layer = &sLayers[bg];
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned chars = ((control >> 2) & 3) * 0x4000;
+    bool color256 = (control & 128) != 0;
+    unsigned columns = (size & 1) ? 64 : 32, rows = (size & 2) ? 64 : 32;
+    unsigned cells = rows * columns;
+    bool full = !layer->valid || sCellControl[bg] != control;
+    unsigned count = 0;
+
+    ++stamp;
+    for (unsigned row = 0; row < rows; ++row)
+    {
+        unsigned rowBase = map + CtrVideo_TextMapOffset(0, row, size);
+
+        for (unsigned column = 0; column < columns; ++column)
+        {
+            unsigned cell = row * columns + column;
+            unsigned entry = Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
+            unsigned index = entry & 1023;
+            int slot;
+            uint32_t sig;
+
+            if (memoStamp[index] == stamp && memoEntry[index] == entry)
+                slot = memoSlot[index];
+            else
+            {
+                unsigned address = chars + index * (color256 ? 64 : 32);
+
+                slot = address < 0x10000 ? GetTileSlot(address, entry >> 12, color256) : -1;
+                memoStamp[index] = stamp;
+                memoEntry[index] = (uint16_t)entry;
+                memoSlot[index] = (int16_t)slot;
+            }
+            cellSlot[cell] = (int16_t)slot;
+            cellEntry[cell] = (uint16_t)entry;
+            /* Nothing drawn is 0; anything drawn has the top bit set. */
+            sig = slot < 0 ? 0 : (((sTiles[slot].serial << 2) | ((entry >> 10) & 3)) | 1u << 31);
+            if (!full && sCellSig[bg][cell] == sig) continue;
+            sCellSig[bg][cell] = sig;
+            dirty[count++] = (uint16_t)cell;
+        }
+    }
+    if (count == 0) return false;
+    layer->valid = true;
+    sCellControl[bg] = control;
+
+    BlendForget();
+    if (full || count > cells / 2)
+    {
+        C2D_TargetClear(layer->target, 0);
+        C2D_SceneBegin(layer->target);
+        C2D_ViewReset();
+        count = 0;
+        for (unsigned cell = 0; cell < cells; ++cell)
+            dirty[count++] = (uint16_t)cell;
+    }
+    else
+    {
+        /* Clear the changed cells to transparent first: a tile's transparent
+         * pixels must not keep what was drawn there before. */
+        C2D_SceneBegin(layer->target);
+        C2D_ViewReset();
+        C2D_Flush();
+        C3D_AlphaTest(false, GPU_ALWAYS, 0);
+        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+        for (unsigned i = 0; i < count; ++i)
+            C2D_DrawRectSolid((dirty[i] % columns) * 8, (dirty[i] / columns) * 8, 0, 8, 8, 0);
+        C2D_Flush();
+        BlendForget();
+    }
+    Blend(bg, false, false);
+    for (unsigned i = 0; i < count; ++i)
+    {
+        unsigned cell = dirty[i];
+
+        if (cellSlot[cell] >= 0)
+            DrawSlot(cellSlot[cell], (cell % columns) * 8, (cell / columns) * 8,
+                     cellEntry[cell] & 1024, cellEntry[cell] & 2048);
+    }
+    C2D_Flush();
+    return true;
+}
+
+/* A field background from its texture: one quad, wrapping as its tilemap
+ * does, over the band the tilemap spans (DrawTextBg's limits). */
+static bool DrawFieldBgTex(unsigned bg)
+{
+    LayerTexture *layer = &sLayers[bg];
+    float width, height, sx, sy;
+    int x0 = sClipX0 > 0 ? sClipX0 : 0, y0 = sClipY0 > 0 ? sClipY0 : 0, x1, y1;
+
+    if (!sFieldLayers || !LayerDrawable(bg)) return false;
+    width = layer->tex.width;
+    height = layer->tex.height;
+    x1 = sClipX1 < (int)width ? sClipX1 : (int)width;
+    y1 = sClipY1 < (int)height ? sClipY1 : (int)height;
+    if (x0 >= x1 || y0 >= y1) return true;
+    sx = Reg(0x10 + bg * 4) & 511;
+    sy = Reg(0x12 + bg * 4) & 511;
+    ViewBase();
+    {
+        const Tex3DS_SubTexture run = {(u16)(x1 - x0), (u16)(y1 - y0),
+            (sx + x0) / width, 1.0f - (sy + y0) / height,
+            (sx + x1) / width, 1.0f - (sy + y1) / height};
+
+        ++sStats.tiles;
+        C2D_DrawImageAt((C2D_Image){&layer->tex, &run}, x0 + CTR_VIEW_X + sLayerShift,
+                        y0 + CTR_VIEW_Y, 0, &sTint, 1, 1);
+    }
+    return true;
+}
+
 /* Inside the frame, before the logical surface: the maps that changed. */
 static void LayersRender(void)
 {
@@ -1357,6 +1547,11 @@ static void LayersRender(void)
         uint32_t hash;
 
         if (!sLayerReady[bg]) continue;
+        if (sFieldLayers)
+        {
+            if (LayerRenderCells(bg)) any = true;
+            continue;
+        }
         hash = LayerHash(bg);
         if (layer->valid && layer->hash == hash) continue;
         layer->hash = hash;
@@ -1718,7 +1913,8 @@ static void DrawObjects(unsigned priority, bool effects)
         else
         {
             if (x >= VIEW_RIGHT) x -= 512;
-            if (y >= VIEW_BOTTOM) y -= 256;
+            if (sOamAnchored[i >> 5] & (1u << (i & 31))) y = OamUnwrapY((unsigned)i, y);
+            else if (y >= VIEW_BOTTOM) y -= 256;
 #if CTR_VOXEL_ENABLED
             if (sVoxelWeatherOnly)
             {
@@ -1782,9 +1978,12 @@ static void Layers(unsigned mask)
             /* Which stage a slow frame is in: the layer walk, the sprites or
              * the GPU. Guessing that from fps alone costs a hardware run. */
             uint64_t start = svcGetSystemTick();
+            float shift = sLayerShift;
+            if (sFieldUi && bg == 0) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
             if ((mode == 1 && bg == 2) || mode == 2) DrawAffineBg(bg);
             else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
-            else if (!DrawLineBg(bg) && !DrawStageBgTex(bg)) DrawTextBg(bg);
+            else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg)) DrawTextBg(bg);
+            sLayerShift = shift;
             sBgTicks += svcGetSystemTick() - start;
         }
         if ((mask & 16) && (display & 0x1000))
@@ -2172,17 +2371,6 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
  * OAM entries tagged by the sprite sorter as weather are composed. Drawing all
  * OBJ here would duplicate the player and every NPC over their billboards.
  */
-/*
- * The text layer is a 32-column tilemap, so it only addresses the left 256px
- * of the 400px viewport, and widening it does not fit in background VRAM (see
- * the note on sStandardTextBox_WindowTemplates in src/menu.c). That is a
- * limit on where the *game* can put a window, not on where this compositor can
- * draw one: in voxel mode BG0 is drawn on its own, so the whole band can be
- * placed where it belongs. The standard text box spans x=16..232 within the
- * band, so its centre reaches the middle of the viewport at +76.
- */
-#define CTR_VOXEL_UI_SHIFT 76.0f
-
 /* Fixed north-facing camera: the upper 88 pixels are the distant background.
  * Four one-pixel taps, fading to zero towards the focus plane, reuse the world
  * surface. No extra target, depth readback or full-screen blur on Old 3DS. */
@@ -2215,7 +2403,7 @@ static void ComposeVoxelOverlay(void)
     Layers(1u << 4);
     sVoxelWeatherOnly = false;
     /* Text windows and prompts must stay above the precipitation. */
-    sLayerOrigin = CTR_VOXEL_UI_SHIFT;
+    sLayerOrigin = CTR_FIELD_UI_SHIFT;
     Layers(1u << 0);
     sLayerOrigin = 0.0f;
 }
@@ -2619,6 +2807,8 @@ void CtrVideo_Present(void)
         sViewX = sViewY = 0;
     }
     ClipToView();
+    /* The voxel overworld draws the field itself when it is switched on. */
+    sFieldLayers = !sStage && !sCentred && !sBattle && CtrGame_IsOverworld() && !CtrSettings_Voxel();
     LayersPrepare();
     ScenePrepare();
     uint64_t waitStart = svcGetSystemTick();
@@ -2683,6 +2873,7 @@ void CtrVideo_Present(void)
      * composed at all: with 3D off this is the same single pass as before.
      * Whole pixels only, so every layer stays on the pixel grid in both eyes.
      */
+    bool field = !sStage && !sCentred && !sBattle && CtrGame_IsOverworld();
 #if CTR_VOXEL_ENABLED
     /*
      * Preparing the voxel frame is part of the decision. If the atlas or the
@@ -2693,7 +2884,8 @@ void CtrVideo_Present(void)
      * being made - by the 2D compositor. Either way it never takes the depth
      * planes: holding them there is what kept the overworld's atlas out of
      * VRAM for good, the 2D picture standing in for it frame after frame. */
-    bool overworld = !sStage && !sCentred && !sBattle && CtrVoxel_IsAvailable();
+    /* Opt-in from the bottom screen's options (CtrSettings_Voxel). */
+    bool overworld = field && CtrSettings_Voxel() && CtrVoxel_IsAvailable();
     bool voxel = overworld && CtrVoxel_Update();
     /* A new map still being made - a frame or two, behind the fade - is
      * black rather than the 2D picture flashing up before the 3D one. */
@@ -2701,6 +2893,8 @@ void CtrVideo_Present(void)
 #else
     const bool voxel = false, overworld = false, blank = false;
 #endif
+    /* The 2D field centres its text windows as the voxel overlay does. */
+    sFieldUi = field && !voxel;
     float slider = osGet3DSliderState();
     /* Real stereoscopy for the voxel world is V8; the layer parallax of the
      * 2D path means nothing for a 3D scene, so it stays off there. */

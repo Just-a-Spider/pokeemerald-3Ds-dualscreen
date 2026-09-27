@@ -45,6 +45,13 @@ void CtrVideo_Present(void);
 /* Keep showing the last top-screen frame instead of the game's screen. */
 void CtrVideo_HoldTop(bool hold);
 /* OAM entries belonging to field weather, tagged while BuildOamBuffer sorts sprites. */
+/*
+ * The true y of the sprite that wrote OAM entries [first, end). OAM keeps 8
+ * bits of it, which a 160-line GBA screen never confuses, but the 240-line
+ * field view does: a sprite just below it reads as one just above.
+ */
+void CtrVideo_ClearOamAnchors(void);
+void CtrVideo_SetOamAnchor(unsigned first, unsigned end, int y);
 void CtrVideo_ClearVoxelWeatherOam(void);
 void CtrVideo_MarkVoxelWeatherOam(unsigned first, unsigned end);
 void CtrVideo_NotifyTilesetAnimWrite(const void *dest, unsigned bytes);

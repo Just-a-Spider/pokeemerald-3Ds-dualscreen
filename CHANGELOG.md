@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.1 — 2026-09-27
+
+- The voxel overworld is now off by default. It is switched on from the new
+  **VOXEL 3D** row of the bottom-screen OPTION screen.
+- While it is on, **3D ANGLE** (34-46 degrees, default 40) and **3D ZOOM**
+  (90-120%, default 100%) adjust its camera.
+- These settings are kept in `/3ds/emerald3ds/settings.txt` and apply at once,
+  without saving the game.
+- Classic 2D field: text boxes, prompts and the map name are centred as in
+  the voxel view.
+- Classic 2D field: much faster on Old 3DS; the backgrounds are kept in
+  textures and only the cells that change are redrawn.
+- Classic 2D field: sprites just below the view are no longer drawn at the
+  top of the screen.
+
 ## 0.1 — 2026-09-26 — first public version
 
 - Native ARM11 port of pokeemerald for Nintendo 3DS: GPU compositor at

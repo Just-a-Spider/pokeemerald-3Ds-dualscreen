@@ -49,12 +49,24 @@ void CtrFs_Shutdown(void);
 FILE *CtrFs_OpenAsset(const char *relativePath);
 FILE *CtrFs_OpenData(const char *relativePath, const char *mode);
 
+/* The port's own settings (settings.txt on the SD card, see 3ds_settings.c). */
+void CtrSettings_Load(void);
+bool CtrSettings_Voxel(void);
+void CtrSettings_SetVoxel(bool on);
+/* Voxel camera pitch in degrees and zoom in percent, from a short fixed list. */
+int CtrSettings_VoxelPitch(void);
+int CtrSettings_VoxelZoom(void);
+void CtrSettings_StepVoxelPitch(int direction);
+void CtrSettings_StepVoxelZoom(int direction);
+
 void CtrGame_Init(void);
 void CtrGame_Frame(void);
 void CtrGame_VBlank(void);
 uint32_t CtrGame_Frames(void);
 uint32_t CtrGame_APresses(void);
 uint32_t CtrGame_Checks(void);
+/* The field is on screen (CB2_Overworld), whichever way it is drawn. */
+bool CtrGame_IsOverworld(void);
 
 /* C identifiers cannot start with '3'. Logs retain the plan's 3DS_STUB tag. */
 #define CTR_STUB(id, message) CtrLog_Write(CTR_LOG_GAME, "[3DS_STUB] %s: %s", id, message)

@@ -47,7 +47,9 @@ interface on the bottom screen that replaces the START menu.
 - **Two screens**: the game keeps the top screen; the bottom screen is a touch
   interface that takes the place of the START menu.
 - **Optional voxel overworld**: the top screen can show the overworld in 3D,
-  with modelled buildings, trees, signposts and terrain relief.
+  with modelled buildings, trees, signposts and terrain relief. It is off by
+  default: turn on **VOXEL 3D** in the bottom screen's OPTION screen, where
+  **3D ANGLE** and **3D ZOOM** then adjust its camera.
 - **Your own data**: the game data is built on your computer from your own
   cartridge dump; nothing from the ROM is distributed.
 
