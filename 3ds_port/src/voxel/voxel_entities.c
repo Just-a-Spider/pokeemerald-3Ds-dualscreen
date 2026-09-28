@@ -294,8 +294,16 @@ static bool RefreshSlot(unsigned index, const struct Sprite *sprite, uint16_t *a
 
 /* ── Billboards ─────────────────────────────────────────────────────────── */
 
+/*
+ * The card stands upright, and the camera looks down on it, so on screen it
+ * came out cos(pitch) of its height: at 40 degrees a quarter short, the
+ * characters squat. It is drawn 1/cos(pitch) tall instead, which puts it back
+ * to the sprite's own proportions as the camera sees it. Still upright, so it
+ * sorts against the walls behind it exactly as before.
+ */
 static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsigned index,
-                          float worldX, float worldZ, float rightX, float rightZ, float shade)
+                          float worldX, float worldZ, float rightX, float rightZ, float stretch,
+                          float shade)
 {
     unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
@@ -305,7 +313,7 @@ static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, un
     float v0 = 1.0f - baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
     float v1 = 1.0f - (baseY + slot->height) / (float)VOXEL_SPRITE_ATLAS_DIM;
     float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
-    float height = slot->height / VOXEL_PIXELS_PER_TILE;
+    float height = slot->height / VOXEL_PIXELS_PER_TILE * stretch;
     /* Standing on the centre of its tile, feet on the ground. */
     float cx = worldX + 0.5f, cz = worldZ + 0.5f;
     /* On relief the sprite stands where its cell was lifted to, and rides
@@ -443,6 +451,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
      * default yaw of 0 this is (1,0,0), the same plane the reference uses. */
     float yawRad = camera->yaw * (3.14159265358979323846f / 180.0f);
     float rightX = cosf(yawRad), rightZ = -sinf(yawRad);
+    float stretch = 1.0f / cosf(camera->pitch * (3.14159265358979323846f / 180.0f));
     unsigned updates = 0;
     sPlayerVertexFirst = -1;
 
@@ -508,7 +517,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
         if (reflections != NULL && obj->hasReflection)
             EmitReflection(reflections, &sSlots[i], i, worldX, worldZ, rightX, rightZ);
         unsigned first = builder->count;
-        EmitBillboard(builder, &sSlots[i], i, worldX, worldZ, rightX, rightZ, shade);
+        EmitBillboard(builder, &sSlots[i], i, worldX, worldZ, rightX, rightZ, stretch, shade);
         if (i == gPlayerAvatar.objectEventId && builder->count == first + 6)
             sPlayerVertexFirst = (int)first;
     }
