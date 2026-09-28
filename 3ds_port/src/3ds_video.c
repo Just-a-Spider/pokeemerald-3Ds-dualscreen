@@ -1335,12 +1335,13 @@ int CtrPokenavList_Bg(void);
 static unsigned CentredLayers(const CentredFill *fill)
 {
     unsigned display = Reg(0), best = 4, priority = 0;
-    /* A PokéNav list scrolls behind the screen's frame: the frame is what
-     * goes on past the picture, not the list's next entries. */
-    int list = CtrPokenavList_Bg();
+    int list;
 
     if (!fill->backmost) return fill->layers;
     if ((display & 7) > 2) return 0;
+    /* A PokéNav list scrolls behind the screen's frame: the frame is what
+     * goes on past the picture, not the list's next entries. */
+    list = CtrPokenavList_Bg();
     for (unsigned bg = 0; bg < 4; ++bg)
         if ((display & (0x100u << bg)) && (Reg(8 + bg * 2) & 3) >= priority && (int)bg != list
          && !((display & 7) == 1 && bg == 3) && !((display & 7) == 2 && bg < 2))

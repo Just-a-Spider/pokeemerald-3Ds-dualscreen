@@ -8018,7 +8018,7 @@ index 21109f9c3cb325fa4da3d05145833f7341c26f65..a5886fd6a99d2b326f17528a81e9608f
  static void TilemapFiveMovesDisplay(u16 *dst, u16 palette, bool8 remove)
  {
 diff --git a/src/pokenav.c b/src/pokenav.c
-index 03f48ee3669c3411f124ebeaf5fa936809cccf6c..220bf26d71cbe43fb92fbb459b251b3fba1dfdc9 100644
+index 03f48ee3669c3411f124ebeaf5fa936809cccf6c..c93bc0d002a8f736cf1a4b718c7a11285fa7ebde 100644
 --- a/src/pokenav.c
 +++ b/src/pokenav.c
 @@ -588,3 +588,24 @@ bool32 CanViewRibbonsMenu(void)
@@ -8030,7 +8030,7 @@ index 03f48ee3669c3411f124ebeaf5fa936809cccf6c..220bf26d71cbe43fb92fbb459b251b3f
 +// The 3DS bottom screen shows the PokéNav while it runs.
 +bool8 CtrPokenav_IsOpen(void)
 +{
-+    return gMain.callback2 == CB2_Pokenav;
++    return gMain.callback2 == CB2_Pokenav && gPokenavResources != NULL;
 +}
 +
 +// The screen on show (POKENAV_MAIN_MENU...), and whether it waits for input:
@@ -8065,10 +8065,10 @@ index 1ebf6edbe9a286b0e05944ca7b51567e14d830d9..cde8c2132997e5e5256833ac0b4152db
 +}
 +#endif
 diff --git a/src/pokenav_list.c b/src/pokenav_list.c
-index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..4d1f567a49945c411b72c53f535799175bcb7317 100644
+index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..595bd33bd6ab9d65d69904a06917e219f32229da 100644
 --- a/src/pokenav_list.c
 +++ b/src/pokenav_list.c
-@@ -1009,3 +1009,53 @@ static bool32 CopyPokenavListMenuTemplate(struct PokenavListSub *dest, const str
+@@ -1009,3 +1009,54 @@ static bool32 CopyPokenavListMenuTemplate(struct PokenavListSub *dest, const str
      dest->downArrow = NULL;
      return 1;
  }
@@ -8100,9 +8100,10 @@ index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..4d1f567a49945c411b72c53f53579917
 +// past the picture as it does the frame.
 +int CtrPokenavList_Bg(void)
 +{
-+    struct PokenavList *list = GetSubstructPtr(POKENAV_SUBSTRUCT_LIST);
++    struct PokenavList *list;
 +
-+    if (!CtrPokenav_IsOpen() || list == NULL)
++    // Without the PokéNav there are no substructs to look in at all.
++    if (!CtrPokenav_IsOpen() || (list = GetSubstructPtr(POKENAV_SUBSTRUCT_LIST)) == NULL)
 +        return -1;
 +    return list->sub.listWindow.bg;
 +}
