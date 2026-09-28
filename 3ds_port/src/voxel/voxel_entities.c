@@ -50,6 +50,9 @@ typedef struct
     /* Extent last written into the atlas cell, so a shrinking sprite clears
      * exactly what it used to cover instead of the whole 64x64 slot. */
     int drawnWidth, drawnHeight;
+    /* Empty rows under the lowest opaque one: the art's feet sit this far up
+     * the cell, so the card stands this much lower to put them on the ground. */
+    int footPad;
 } VoxelSpriteSlot;
 
 static VoxelSpriteSlot sSlots[VOXEL_SPRITE_SLOTS];
@@ -201,6 +204,8 @@ static void DecodeSlot(VoxelSpriteSlot *slot, unsigned index, uint16_t *atlas)
                                  VOXEL_SPRITE_ATLAS_DIM)] = 0;
     slot->drawnWidth = slot->width;
     slot->drawnHeight = slot->height;
+    int lowest = slot->height - 1;
+    bool opaque = false;
 
     for (int ty = 0; ty < slot->height / 8; ++ty)
     {
@@ -224,6 +229,8 @@ static void DecodeSlot(VoxelSpriteSlot *slot, unsigned index, uint16_t *atlas)
                         continue;
                     if (slot->flipX) outX = slot->width - 1 - outX;
                     if (slot->flipY) outY = slot->height - 1 - outY;
+                    if (!opaque || outY > lowest) lowest = outY;
+                    opaque = true;
                     atlas[CtrVideo_Texel(baseX + (unsigned)outX, baseY + (unsigned)outY,
                                          VOXEL_SPRITE_ATLAS_DIM)] =
                         CtrVideo_RGBA5551(slot->palette[colorIdx]);
@@ -231,6 +238,7 @@ static void DecodeSlot(VoxelSpriteSlot *slot, unsigned index, uint16_t *atlas)
             }
         }
     }
+    slot->footPad = slot->height - 1 - lowest;
 }
 
 /*
@@ -311,6 +319,9 @@ static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, un
     /* On relief the sprite stands where its cell was lifted to, and rides
      * the lattice between cells, so a flight of stairs is climbed. */
     float lift = VoxelRelief_LiftAt(cx, cz), shift = VoxelRelief_ShiftAt(cx, cz);
+    /* Sunk by the empty rows under the feet; they are transparent, so what
+     * goes under the ground shows nothing. */
+    lift -= slot->footPad / VOXEL_PIXELS_PER_TILE;
     float ax = cx - rightX * halfW, az = cz - rightZ * halfW + shift;
     float bx = cx + rightX * halfW, bz = cz + rightZ * halfW + shift;
 
@@ -348,7 +359,10 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
     float v1 = 1.0f - (baseY + slot->height) / (float)VOXEL_SPRITE_ATLAS_DIM;
     float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
     float height = slot->height / VOXEL_PIXELS_PER_TILE;
-    float cx = worldX + 0.5f, cz = worldZ + 0.5f;
+    /* The card's foot is footPad below the ground (EmitBillboard), so its
+     * shadow starts that far towards the sun and the feet meet their own. */
+    float pad = slot->footPad / VOXEL_PIXELS_PER_TILE;
+    float cx = worldX + 0.5f - VOXEL_SUN_DX * pad, cz = worldZ + 0.5f - VOXEL_SUN_DZ * pad;
     float ax = cx - rightX * halfW, az = cz - rightZ * halfW;
     float bx = cx + rightX * halfW, bz = cz + rightZ * halfW;
     float sx = VOXEL_SUN_DX * height, sz = VOXEL_SUN_DZ * height;
