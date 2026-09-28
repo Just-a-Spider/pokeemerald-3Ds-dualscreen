@@ -66,11 +66,23 @@ void CtrVideo_RequestPlaneRelease(void);
  */
 void CtrVideo_SetStage(bool stage);
 /*
- * Whether the frames that follow are a GBA screen shown centred (the fly map, the Town Map):
- * 1:1 at the stage position, with only the layers that wrap on the GBA and
- * sprites reaching into the margins.
+ * Which GBA screen shown centred the frames that follow are, if any: 1:1 at
+ * the stage position, with the layers that wrap on the GBA and sprites
+ * reaching into the margins. Some screens also carry their background out to
+ * the edges of the top screen (3ds_video.c, sCentredFills).
  */
-void CtrVideo_SetCentred(bool centred);
+enum
+{
+    CTR_CENTRED_NONE,
+    /* The fly map, the Town Map. */
+    CTR_CENTRED_PLAIN,
+    /* The title menu and the professor's speech. */
+    CTR_CENTRED_MAIN_MENU,
+    CTR_CENTRED_NAMING,
+    CTR_CENTRED_CLOCK,
+    CTR_CENTRED_SCREENS
+};
+void CtrVideo_SetCentred(unsigned screen);
 /*
  * Whether the frames that follow are the battle scene: the 240x160 picture 1:1
  * at (CTR_BATTLE_X, CTR_BATTLE_Y), so that its text box lies on the bottom

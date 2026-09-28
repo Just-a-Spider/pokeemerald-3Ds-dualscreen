@@ -51,8 +51,11 @@ function pointers (callbacks, native script commands) are guarded for
 
 The logical display stays GBA-sized for game logic; the field of view is
 widened (`FIELD_VIEW_*`) and screens staged as one GBA picture (title,
-intro, credits, battle, region map) are composed centred with margins from
-their own art (`3ds_port/compat/ctr_gba_*.h`).
+intro, credits, battle, region map, title menu and professor's speech, naming
+screen, clock) are composed centred with margins from their own art
+(`3ds_port/compat/ctr_gba_*.h`): a still full-screen picture glows out into
+black from the colours of its edge, a scrolling one wraps, and a menu screen
+carries its plain or patterned background out to the edges.
 
 ## Memory
 

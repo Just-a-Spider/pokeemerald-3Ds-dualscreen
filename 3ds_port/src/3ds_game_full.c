@@ -116,8 +116,12 @@ static void SampleAudioStats(void)
 typedef struct
 {
     IntrCallback callbacks[CTR_STAGE_CALLBACKS];
+    /* For the centred set, which screen installed each callback. */
+    uint8_t screens[CTR_STAGE_CALLBACKS];
     unsigned count;
     bool on;
+    /* The screen of the active callback, kept across the gaps between scenes. */
+    unsigned screen;
     const char *name;
 } StageSet;
 /* Pictures staged whole (ctr_gba_stage.h), screens shown centred
@@ -125,7 +129,7 @@ typedef struct
 static StageSet sStage = {.name = "GBA stage"}, sCentred = {.name = "GBA centred"};
 static StageSet sBattle = {.name = "GBA battle"};
 
-static void RememberCallback(StageSet *set, IntrCallback callback)
+static void RememberCallback(StageSet *set, IntrCallback callback, unsigned screen)
 {
     unsigned i;
 
@@ -133,23 +137,45 @@ static void RememberCallback(StageSet *set, IntrCallback callback)
         if (set->callbacks[i] == callback) break;
     if (callback && i == set->count && i < CTR_STAGE_CALLBACKS)
         set->callbacks[set->count++] = callback;
+    if (callback && i < set->count)
+        set->screens[i] = (uint8_t)screen;
 }
 
 void CtrStage_SetVBlankCallback(IntrCallback callback)
 {
-    RememberCallback(&sStage, callback);
+    RememberCallback(&sStage, callback, 0);
+    SetVBlankCallback(callback);
+}
+
+static void SetCentredCallback(IntrCallback callback, unsigned screen)
+{
+    RememberCallback(&sCentred, callback, screen);
     SetVBlankCallback(callback);
 }
 
 void CtrCentred_SetVBlankCallback(IntrCallback callback)
 {
-    RememberCallback(&sCentred, callback);
-    SetVBlankCallback(callback);
+    SetCentredCallback(callback, CTR_CENTRED_PLAIN);
+}
+
+void CtrCentredMainMenu_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_MAIN_MENU);
+}
+
+void CtrCentredNaming_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_NAMING);
+}
+
+void CtrCentredClock_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_CLOCK);
 }
 
 void CtrBattle_SetVBlankCallback(IntrCallback callback)
 {
-    RememberCallback(&sBattle, callback);
+    RememberCallback(&sBattle, callback, 0);
     SetVBlankCallback(callback);
 }
 
@@ -158,7 +184,11 @@ static void UpdateSet(StageSet *set, IntrCallback callback)
     bool on = false;
 
     for (unsigned i = 0; i < set->count; ++i)
-        if (set->callbacks[i] == callback) on = true;
+        if (set->callbacks[i] == callback)
+        {
+            on = true;
+            set->screen = set->screens[i];
+        }
     if (on != set->on)
         CtrLog_Write(CTR_LOG_VIDEO, "%s %s at frame %lu", set->name, on ? "on" : "off",
                      (unsigned long)sFrames);
@@ -176,7 +206,7 @@ static void UpdateStage(void)
         UpdateSet(&sBattle, callback);
     }
     CtrVideo_SetStage(sStage.on);
-    CtrVideo_SetCentred(sCentred.on);
+    CtrVideo_SetCentred(sCentred.on ? sCentred.screen : CTR_CENTRED_NONE);
     CtrVideo_SetBattle(sBattle.on);
 }
 

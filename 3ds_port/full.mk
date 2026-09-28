@@ -120,10 +120,14 @@ $(CTR_GBA_STAGE_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE -include $(abspath compat/c
 $(CTR_GBA_STAGE_OBJS): compat/ctr_gba_stage.h $(ROOT)/include/gba/defines.h
 # GBA screens shown centred, margins only from layers that wrap on the GBA
 # (compat/ctr_gba_centred.h).
-CTR_GBA_CENTRED_SRCS := region_map field_region_map
+CTR_GBA_CENTRED_SRCS := region_map field_region_map main_menu naming_screen wallclock
 CTR_GBA_CENTRED_OBJS := $(patsubst %,build/root/src/%.o,$(CTR_GBA_CENTRED_SRCS))
 $(CTR_GBA_CENTRED_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE -include $(abspath compat/ctr_gba_centred.h)
 $(CTR_GBA_CENTRED_OBJS): compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
+# Which centred screen each of those is, for how its margins are filled.
+build/root/src/main_menu.o: FULLCFLAGS += -DCTR_CENTRED_MAIN_MENU
+build/root/src/naming_screen.o: FULLCFLAGS += -DCTR_CENTRED_NAMING
+build/root/src/wallclock.o: FULLCFLAGS += -DCTR_CENTRED_CLOCK
 # The battle scene: one 240x160 composition whose sprites, windows, scanline
 # tables and BG pages are all laid out for the GBA screen, shown 1:1 and filled
 # out to the whole top screen by the compositor (compat/ctr_gba_battle.h).

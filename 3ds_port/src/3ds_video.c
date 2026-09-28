@@ -31,7 +31,8 @@
  * A centred GBA screen (CtrVideo_SetCentred) sits at the same place, but its
  * margins are not filled from the picture: only the layers that wrap on the
  * GBA (an affine map with wrap-around) and sprites reach into them, and text
- * layers stop at the edge of the 240x160 screen.
+ * layers stop at the edge of the 240x160 screen - except the backgrounds a
+ * screen names in sCentredFills, which carry on to the edges.
  *
  * The battle scene (CtrVideo_SetBattle) sits centred across and on the bottom
  * edge, so its text box is the bottom of the top screen. The text box is
@@ -73,7 +74,8 @@ static float sShiftZoom = 1.0f;
 #define CTR_VIEW_Y sViewY
 /* Requested by the game bridge, and what the current frame is composed as. */
 static bool sStageRequested, sStage;
-static bool sCentredRequested, sCentred;
+static bool sCentred;
+static unsigned sCentredRequested, sCentredScreen;
 static bool sBattleRequested, sBattle;
 /* Visible extent in GBA coordinates. */
 #define VIEW_LEFT ((int)floorf(-sOffX / sZoom) - sViewX)
@@ -101,6 +103,10 @@ typedef struct
     uint32_t colors[8];
     /* Bumped on every upload (new bytes or new palette), never reused. */
     uint32_t serial;
+    /* The sums of the 5-bit channels of its opaque pixels, and how many there
+     * are: its average colour and coverage (StageGlow). */
+    uint16_t sumR, sumG, sumB;
+    uint8_t opaque;
     bool valid, visible;
 } Tile;
 static uint32_t sTileSerial;
@@ -392,6 +398,8 @@ static int GetTileSlot(unsigned address, unsigned bank, bool color256)
             uint16_t *dest = (uint16_t *)sAtlas.data + slot * 64;
             memset(tile->colors, 0, sizeof(tile->colors));
             tile->visible = false;
+            tile->sumR = tile->sumG = tile->sumB = 0;
+            tile->opaque = 0;
             for (unsigned pixel = 0; pixel < 64; ++pixel)
             {
                 unsigned index = color256 ? tile->bytes[pixel]
@@ -399,8 +407,14 @@ static int GetTileSlot(unsigned address, unsigned bank, bool color256)
                 dest[sMorton[pixel]] = index ? sTexturePalette[paletteBase + index] : 0;
                 if (index)
                 {
+                    unsigned color = sPalette[paletteBase + index];
+
                     tile->visible = true;
                     tile->colors[index / 32] |= 1u << (index & 31);
+                    tile->sumR += color & 31;
+                    tile->sumG += (color >> 5) & 31;
+                    tile->sumB += (color >> 10) & 31;
+                    ++tile->opaque;
                 }
             }
             /* C3D_FrameEnd(0) flushes linear memory once before submitting
@@ -497,7 +511,7 @@ static void DrawTile(unsigned address, unsigned bank, bool color256,
  */
 /* Extra horizontal displacement of what DrawTextSpanAt draws, for a band that
  * is moved as a whole (the battle text box, DrawBattleText). */
-static int sSpanShiftX;
+static int sSpanShiftX, sSpanShiftY;
 
 /* The base transform of everything composed: the current zoom. */
 static void ViewBase(void)
@@ -585,7 +599,8 @@ static void DrawTextSpanAt(unsigned bg, int left, int right, int top, int bottom
 
                 if (mirrorX2 >= 0) { dx = mirrorX2 - px - 8; flipX = !flipX; }
                 if (mirrorY2 >= 0) { dy = mirrorY2 - py - 8; flipY = !flipY; }
-                DrawSlot(slot, dx + sSpanShiftX + CTR_VIEW_X + sLayerShift, dy + CTR_VIEW_Y, flipX, flipY);
+                DrawSlot(slot, dx + sSpanShiftX + CTR_VIEW_X + sLayerShift, dy + sSpanShiftY + CTR_VIEW_Y,
+                         flipX, flipY);
             }
         }
     }
@@ -628,10 +643,13 @@ static void RestoreScissor(void)
  *   drifting clouds - the tilemap is continuous art made to wrap around, so
  *   the margins show the wrap-around, exactly as the GBA brings those columns
  *   onto its own screen a moment later.
- * - A still picture - the leaves of the Game Freak logo, the legendaries, the
- *   title screen - is carried outwards from its own edge tiles and faded into
- *   black (DrawEdgeRegion), like the iris of a film frame. Mirroring was
- *   tried and rejected: it shows every character on an edge twice.
+ * - A still picture between letterbox bars - the legendaries - is carried
+ *   outwards from its own edge tiles and faded into black (DrawEdgeRegion),
+ *   like the iris of a film frame. Mirroring was tried and rejected: it shows
+ *   every character on an edge twice.
+ * - A still picture over the whole GBA screen - the leaves of the Game Freak
+ *   logo, Rayquaza on the title screen - glows out of its edge colours into
+ *   black instead (DrawStageGlow): its edge tiles repeated read as copies.
  *
  * Whether a background scrolls is decided from the last STILL_FRAMES frames
  * and held for SCROLL_HOLD_FRAMES after it stops, so a scene does not switch
@@ -865,7 +883,17 @@ static void FadeCorner(C2D_ImageTint *tint, C2D_Corner corner, float f, float k,
     C2D_SetImageTint(tint, corner, C2D_Color32(level, level, level, 255), blend);
 }
 
-static void DrawEdgeRegion(unsigned bg, int x0, int x1, int y0, int y1, int top, int bottom)
+/*
+ * Fills [x0, x1) x [y0, y1) outside the picture with the tiles on its edge,
+ * each margin tile repeating the edge tile of its row, column or corner. The
+ * edge can be moved inwards by whole tiles (inset: left, top, right, bottom),
+ * for a picture framed by a border whose inside is the pattern to carry on.
+ * A still stage fades what it repeats into black; a centred screen does not.
+ */
+static const int8_t sNoInset[4];
+
+static void DrawEdgeRegionInset(unsigned bg, int x0, int x1, int y0, int y1, int top, int bottom,
+                                const int8_t inset[4], bool fadeOut)
 {
     unsigned control = Reg(8 + bg * 2), size = control >> 14;
     unsigned map = ((control >> 8) & 31) * 0x800;
@@ -874,8 +902,8 @@ static void DrawEdgeRegion(unsigned bg, int x0, int x1, int y0, int y1, int top,
     unsigned scrollX = Reg(0x10 + bg * 4) & 511, scrollY = Reg(0x12 + bg * 4) & 511;
     int ox = (int)(scrollX & 7), oy = (int)(scrollY & 7);
     /* The grid positions of the tiles on the picture's edges. */
-    int firstX = -ox, lastX = ((239 + ox) & ~7) - ox;
-    int firstY = ((top + oy) & ~7) - oy, lastY = ((bottom - 1 + oy) & ~7) - oy;
+    int firstX = -ox + inset[0] * 8, lastX = ((239 + ox) & ~7) - ox - inset[2] * 8;
+    int firstY = ((top + oy) & ~7) - oy + inset[1] * 8, lastY = ((bottom - 1 + oy) & ~7) - oy - inset[3] * 8;
     bool white;
     float bright = LayerBrightness(bg, &white);
     /* A margin row repeats one edge tile, so the last lookup usually answers. */
@@ -908,6 +936,11 @@ static void DrawEdgeRegion(unsigned bg, int x0, int x1, int y0, int y1, int top,
             }
             slot = lastSlot;
             if (slot < 0) continue;
+            if (!fadeOut)
+            {
+                DrawSlot(slot, px + CTR_VIEW_X + sLayerShift, py + CTR_VIEW_Y, entry & 1024, entry & 2048);
+                continue;
+            }
             /* Past the fade the tile would be black: StageUnderlay drew that. */
             if (sUnderlaid && EdgeFade(px, py, top, bottom) >= 1.0f && EdgeFade(px + 8, py, top, bottom) >= 1.0f
                 && EdgeFade(px, py + 8, top, bottom) >= 1.0f && EdgeFade(px + 8, py + 8, top, bottom) >= 1.0f)
@@ -926,6 +959,250 @@ static void DrawEdgeRegion(unsigned bg, int x0, int x1, int y0, int y1, int top,
     }
     C2D_Flush();
     RestoreScissor();
+}
+
+static void DrawEdgeRegion(unsigned bg, int x0, int x1, int y0, int y1, int top, int bottom)
+{
+    DrawEdgeRegionInset(bg, x0, x1, y0, y1, top, bottom, sNoInset, true);
+}
+
+/*
+ * The margins of a still scene that fills the whole GBA screen - the leaves
+ * behind the Game Freak logo, Rayquaza under the title's clouds - glow with
+ * the colours of the picture's edge and fade into black, like light spilling
+ * past the frame. Repeating the edge tiles out there (DrawEdgeRegion) shows
+ * those tiles as rows of copies, which detailed art like the leaves makes
+ * plain; a glow carries on the colour and nothing else.
+ *
+ * Each 8-pixel step along an edge takes the average colour and coverage of
+ * the two tiles just inside it, softened with its neighbours, and the margin
+ * is one gradient quad per step: from that colour at the edge to black at the
+ * end of the fade, interpolated between steps, so it has no seams. Past the
+ * fade it is black (or StageUnderlay drew that already). The layer's own
+ * brightness effect applies as it does to its picture, and its coverage keeps
+ * the layers below showing through as they do inside the picture.
+ */
+typedef struct { float r, g, b, a; } Glow;
+enum { GLOW_LEFT, GLOW_RIGHT, GLOW_TOP, GLOW_BOTTOM, GLOW_TL, GLOW_TR, GLOW_BL, GLOW_BR };
+#define GLOW_ROWS 20
+#define GLOW_COLUMNS 30
+static Glow sGlowSide[2][GLOW_ROWS], sGlowEdge[2][GLOW_COLUMNS];
+static unsigned sGlowRows;
+static int sGlowTop, sGlowBottom;
+static float sGlowBright;
+static bool sGlowWhite;
+
+/* The colour sums of the tile under picture point (x, y), into acc. */
+static void GlowAdd(unsigned bg, int x, int y, float acc[5])
+{
+    unsigned control = Reg(8 + bg * 2), size = control >> 14;
+    unsigned map = ((control >> 8) & 31) * 0x800;
+    unsigned chars = ((control >> 2) & 3) * 0x4000;
+    bool color256 = (control & 128) != 0;
+    unsigned scrollX = Reg(0x10 + bg * 4) & 511, scrollY = Reg(0x12 + bg * 4) & 511;
+    unsigned column = ((unsigned)(x + (int)scrollX) >> 3) & ((size & 1) ? 63u : 31u);
+    unsigned rowBase = map + CtrVideo_TextMapOffset(0, (unsigned)(y + (int)scrollY) >> 3, size);
+    unsigned entry = Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
+    unsigned address = chars + (entry & 1023) * (color256 ? 64 : 32);
+    int slot;
+
+    acc[4] += 64.0f;
+    if (address >= 0x10000) return;
+    slot = GetTileSlot(address, entry >> 12, color256);
+    if (slot < 0) return;
+    acc[0] += sTiles[slot].sumR;
+    acc[1] += sTiles[slot].sumG;
+    acc[2] += sTiles[slot].sumB;
+    acc[3] += sTiles[slot].opaque;
+}
+
+/* Two tiles inside the edge, as premultiplied colour and coverage. */
+static Glow GlowSample(unsigned bg, int x0, int y0, int x1, int y1)
+{
+    float acc[5] = {0};
+
+    GlowAdd(bg, x0, y0, acc);
+    GlowAdd(bg, x1, y1, acc);
+    return (Glow){acc[0] / (31.0f * acc[4]), acc[1] / (31.0f * acc[4]),
+                  acc[2] / (31.0f * acc[4]), acc[3] / acc[4]};
+}
+
+/* A 1-2-1 blur along an edge, which is what makes it a glow and not bands. */
+static void GlowSoften(Glow *samples, unsigned count)
+{
+    Glow previous = samples[0];
+
+    for (unsigned i = 0; i < count; ++i)
+    {
+        Glow here = samples[i], next = samples[i + 1 < count ? i + 1 : i];
+
+        samples[i] = (Glow){(previous.r + 2 * here.r + next.r) / 4, (previous.g + 2 * here.g + next.g) / 4,
+                            (previous.b + 2 * here.b + next.b) / 4, (previous.a + 2 * here.a + next.a) / 4};
+        previous = here;
+    }
+}
+
+/* Along an edge whose samples are 8 pixels apart from first + 4. */
+static Glow GlowAlong(const Glow *samples, unsigned count, float position, float first)
+{
+    float step = (position - first - 4.0f) / 8.0f, k;
+    unsigned i;
+
+    if (step <= 0.0f) return samples[0];
+    if (step >= count - 1) return samples[count - 1];
+    i = (unsigned)step;
+    k = step - i;
+    return (Glow){samples[i].r + (samples[i + 1].r - samples[i].r) * k,
+                  samples[i].g + (samples[i + 1].g - samples[i].g) * k,
+                  samples[i].b + (samples[i + 1].b - samples[i].b) * k,
+                  samples[i].a + (samples[i + 1].a - samples[i].a) * k};
+}
+
+static Glow GlowMix(Glow a, Glow b, float k)
+{
+    return (Glow){a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k};
+}
+
+/* The glow at margin point (x, y) of a region, as a vertex colour. */
+static u32 GlowAt(unsigned region, float x, float y)
+{
+    Glow glow;
+    float fade, channel[3];
+
+    switch (region)
+    {
+    case GLOW_LEFT: case GLOW_RIGHT:
+        glow = GlowAlong(sGlowSide[region == GLOW_RIGHT], sGlowRows, y, sGlowTop);
+        break;
+    case GLOW_TOP: case GLOW_BOTTOM:
+        glow = GlowAlong(sGlowEdge[region == GLOW_BOTTOM], GLOW_COLUMNS, x, 0);
+        break;
+    default:
+    {
+        /* A corner turns from the side's end to the edge's end by angle, so
+         * it meets both without a seam. */
+        bool right = region == GLOW_TR || region == GLOW_BR, low = region == GLOW_BL || region == GLOW_BR;
+        float across = right ? x - 240 : -x, down = low ? y - sGlowBottom : sGlowTop - y;
+        Glow side = sGlowSide[right][low ? sGlowRows - 1 : 0];
+        Glow edge = sGlowEdge[low][right ? GLOW_COLUMNS - 1 : 0];
+
+        glow = across + down > 0.0f ? GlowMix(edge, side, across / (across + down)) : GlowMix(edge, side, 0.5f);
+        break;
+    }
+    }
+    fade = EdgeFade((int)x, (int)y, sGlowTop, sGlowBottom);
+    channel[0] = glow.r;
+    channel[1] = glow.g;
+    channel[2] = glow.b;
+    for (unsigned c = 0; c < 3; ++c)
+    {
+        float value = glow.a > 0.0f ? channel[c] / glow.a : 0.0f;
+
+        value = sGlowWhite ? value + (1.0f - value) * sGlowBright : value * (1.0f - sGlowBright);
+        value *= 1.0f - fade;
+        channel[c] = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
+    }
+    return C2D_Color32((u8)(channel[0] * 255.0f + 0.5f), (u8)(channel[1] * 255.0f + 0.5f),
+                       (u8)(channel[2] * 255.0f + 0.5f), (u8)(glow.a * 255.0f + 0.5f));
+}
+
+static void GlowQuad(unsigned region, float x0, float y0, float x1, float y1)
+{
+    if (x0 < sClipX0) x0 = sClipX0;
+    if (x1 > sClipX1) x1 = sClipX1;
+    if (y0 < sClipY0) y0 = sClipY0;
+    if (y1 > sClipY1) y1 = sClipY1;
+    if (x0 >= x1 || y0 >= y1) return;
+    if (sUnderlaid && EdgeFade(x0, y0, sGlowTop, sGlowBottom) >= 1.0f
+        && EdgeFade(x1, y0, sGlowTop, sGlowBottom) >= 1.0f && EdgeFade(x0, y1, sGlowTop, sGlowBottom) >= 1.0f
+        && EdgeFade(x1, y1, sGlowTop, sGlowBottom) >= 1.0f)
+        return;
+    ++sStats.tiles;
+    C2D_DrawRectangle(x0 + CTR_VIEW_X + sLayerShift, y0 + CTR_VIEW_Y, 0, x1 - x0, y1 - y0,
+                      GlowAt(region, x0, y0), GlowAt(region, x1, y0),
+                      GlowAt(region, x0, y1), GlowAt(region, x1, y1));
+}
+
+/* A corner: a grid across its fade, so the gradient bends round it, then black. */
+static void GlowCorner(unsigned region, float cx, float cy, float sx, float sy)
+{
+    for (unsigned j = 0; j < 4; ++j)
+        for (unsigned i = 0; i < 4; ++i)
+        {
+            float ax = cx + sx * FADE_ACROSS * i / 4, bx = cx + sx * FADE_ACROSS * (i + 1) / 4;
+            float ay = cy + sy * FADE_DOWN * j / 4, by = cy + sy * FADE_DOWN * (j + 1) / 4;
+
+            GlowQuad(region, ax < bx ? ax : bx, ay < by ? ay : by, ax < bx ? bx : ax, ay < by ? by : ay);
+        }
+    {
+        float fx = cx + sx * FADE_ACROSS, fy = cy + sy * FADE_DOWN, far = sx < 0 ? VIEW_LEFT : VIEW_RIGHT;
+        float farY = sy < 0 ? VIEW_TOP : VIEW_BOTTOM;
+
+        GlowQuad(region, fx < far ? fx : far, cy < farY ? cy : farY, fx < far ? far : fx, cy < farY ? farY : cy);
+        GlowQuad(region, cx < fx ? cx : fx, fy < farY ? fy : farY, cx < fx ? fx : cx, fy < farY ? farY : fy);
+    }
+}
+
+static void DrawStageGlow(unsigned bg, int top, int bottom)
+{
+    float ys[GLOW_ROWS + 2], xs[GLOW_COLUMNS + 2];
+    unsigned ny = 0, nx = 0;
+
+    sGlowTop = top;
+    sGlowBottom = bottom;
+    sGlowBright = LayerBrightness(bg, &sGlowWhite);
+    sGlowRows = (unsigned)(bottom - top + 7) / 8;
+    if (sGlowRows > GLOW_ROWS) sGlowRows = GLOW_ROWS;
+    if (sGlowRows == 0) return;
+    for (unsigned k = 0; k < sGlowRows; ++k)
+    {
+        int y = top + (int)k * 8 + 4;
+
+        if (y >= bottom) y = bottom - 1;
+        sGlowSide[0][k] = GlowSample(bg, 4, y, 12, y);
+        sGlowSide[1][k] = GlowSample(bg, 235, y, 227, y);
+    }
+    for (unsigned k = 0; k < GLOW_COLUMNS; ++k)
+    {
+        int x = (int)k * 8 + 4;
+
+        sGlowEdge[0][k] = GlowSample(bg, x, top + 4, x, top + 12);
+        sGlowEdge[1][k] = GlowSample(bg, x, bottom - 4, x, bottom - 12);
+    }
+    GlowSoften(sGlowSide[0], sGlowRows);
+    GlowSoften(sGlowSide[1], sGlowRows);
+    GlowSoften(sGlowEdge[0], GLOW_COLUMNS);
+    GlowSoften(sGlowEdge[1], GLOW_COLUMNS);
+
+    ys[ny++] = top;
+    for (unsigned k = 0; k < sGlowRows; ++k)
+        if (top + (int)k * 8 + 4 < bottom) ys[ny++] = top + k * 8 + 4;
+    ys[ny++] = bottom;
+    xs[nx++] = 0;
+    for (unsigned k = 0; k < GLOW_COLUMNS; ++k) xs[nx++] = k * 8 + 4;
+    xs[nx++] = 240;
+
+    C2D_Flush();
+    ViewBase();
+    for (unsigned i = 0; i + 1 < ny; ++i)
+    {
+        GlowQuad(GLOW_LEFT, -FADE_ACROSS, ys[i], 0, ys[i + 1]);
+        GlowQuad(GLOW_LEFT, VIEW_LEFT, ys[i], -FADE_ACROSS, ys[i + 1]);
+        GlowQuad(GLOW_RIGHT, 240, ys[i], 240 + FADE_ACROSS, ys[i + 1]);
+        GlowQuad(GLOW_RIGHT, 240 + FADE_ACROSS, ys[i], VIEW_RIGHT, ys[i + 1]);
+    }
+    for (unsigned i = 0; i + 1 < nx; ++i)
+    {
+        GlowQuad(GLOW_TOP, xs[i], top - FADE_DOWN, xs[i + 1], top);
+        GlowQuad(GLOW_TOP, xs[i], VIEW_TOP, xs[i + 1], top - FADE_DOWN);
+        GlowQuad(GLOW_BOTTOM, xs[i], bottom, xs[i + 1], bottom + FADE_DOWN);
+        GlowQuad(GLOW_BOTTOM, xs[i], bottom + FADE_DOWN, xs[i + 1], VIEW_BOTTOM);
+    }
+    GlowCorner(GLOW_TL, 0, top, -1, -1);
+    GlowCorner(GLOW_TR, 240, top, 1, -1);
+    GlowCorner(GLOW_BL, 0, bottom, -1, 1);
+    GlowCorner(GLOW_BR, 240, bottom, 1, 1);
+    C2D_Flush();
 }
 
 static void DrawStageBg(unsigned bg)
@@ -957,6 +1234,11 @@ static void DrawStageBg(unsigned bg)
         return;
     }
     DrawStageCell(bg, 0, 240, top, bottom, -1, -1, top, bottom);
+    if (top == 0 && bottom == 160)
+    {
+        DrawStageGlow(bg, top, bottom);
+        return;
+    }
     DrawEdgeRegion(bg, -512, 512, -512, top, top, bottom);
     DrawEdgeRegion(bg, -512, 512, bottom, 512, top, bottom);
     DrawEdgeRegion(bg, -512, 0, top, bottom, top, bottom);
@@ -1181,6 +1463,74 @@ static void DrawBattleBg(unsigned bg)
     }
 }
 
+/*
+ * How a centred screen fills the top screen around its 240x160 picture.
+ *
+ * - layers: the backgrounds carried out to the edges, each margin tile
+ *   repeating the picture's edge tile in its row, column or corner - moved
+ *   inwards by inset (left, top, right, bottom, in tiles) past a border, so
+ *   what repeats is the pattern inside it. Those screens' backgrounds are a
+ *   plain field or a pattern of one tile, so it carries on as if the screen
+ *   were wider: the clock's teal, the naming screen's stripes and title bar,
+ *   the sky of the professor's speech.
+ * - band: the text box of the professor's speech (BG0 from bandRow down)
+ *   drawn moved by (bandX, bandY), to where the overworld shows its text box
+ *   (menu.c, sStandardTextBox_WindowTemplates, and CTR_FIELD_UI_SHIFT). It
+ *   shares its callback and its BG0 with the title menu, whose windows go
+ *   down to the bottom of the screen; the speech is told apart by the
+ *   character base its BG0 uses (main_menu.c, sBirchBgTemplate).
+ */
+typedef struct
+{
+    uint8_t layers;
+    int8_t inset[4];
+    uint8_t bandRow, bandChars;
+    int8_t bandX, bandY;
+} CentredFill;
+
+static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
+{
+    [CTR_CENTRED_MAIN_MENU] = {.layers = 1u << 1, .bandRow = 14, .bandChars = 3, .bandX = -4, .bandY = 32},
+    /* Inside the yellow border; the title bar is its top row. */
+    [CTR_CENTRED_NAMING] = {.layers = 1u << 3, .inset = {2, 0, 2, 1}},
+    [CTR_CENTRED_CLOCK] = {.layers = 1u << 3},
+};
+
+static void DrawCentredSpan(unsigned bg, int left, int right, int top, int bottom)
+{
+    if (left < sClipX0 - sSpanShiftX) left = sClipX0 - sSpanShiftX;
+    if (right > sClipX1 - sSpanShiftX) right = sClipX1 - sSpanShiftX;
+    if (top < sClipY0 - sSpanShiftY) top = sClipY0 - sSpanShiftY;
+    if (bottom > sClipY1 - sSpanShiftY) bottom = sClipY1 - sSpanShiftY;
+    if (left < right && top < bottom) DrawTextSpan(bg, left, right, top, bottom);
+}
+
+/* True when the centred screen draws this layer itself. */
+static bool DrawCentredBg(unsigned bg)
+{
+    const CentredFill *fill = &sCentredFills[sCentredScreen];
+
+    if (fill->layers & (1u << bg))
+    {
+        DrawCentredSpan(bg, 0, 240, 0, 160);
+        DrawEdgeRegionInset(bg, -512, 512, -512, 0, 0, 160, fill->inset, false);
+        DrawEdgeRegionInset(bg, -512, 512, 160, 512, 0, 160, fill->inset, false);
+        DrawEdgeRegionInset(bg, -512, 0, 0, 160, 0, 160, fill->inset, false);
+        DrawEdgeRegionInset(bg, 240, 512, 0, 160, 0, 160, fill->inset, false);
+        return true;
+    }
+    if (bg == 0 && fill->bandRow && ((Reg(8) >> 2) & 3) == fill->bandChars)
+    {
+        DrawCentredSpan(0, 0, 240, 0, fill->bandRow * 8);
+        sSpanShiftX = fill->bandX;
+        sSpanShiftY = fill->bandY;
+        DrawCentredSpan(0, 0, 240, fill->bandRow * 8, 160);
+        sSpanShiftX = sSpanShiftY = 0;
+        return true;
+    }
+    return false;
+}
+
 static void DrawTextBg(unsigned bg)
 {
     unsigned control = Reg(8 + bg * 2), size = control >> 14;
@@ -1209,6 +1559,7 @@ static void DrawTextBg(unsigned bg)
     }
     if (sCentred)
     {
+        if (DrawCentredBg(bg)) return;
         if (right > 240) right = 240;
         if (bottom > 160) bottom = 160;
     }
@@ -1689,6 +2040,11 @@ static bool DrawStageBgTex(unsigned bg)
         return true;
     }
     DrawLayerRect(bg, 0, 240, top, bottom, 0, top, 1, 1, false, top, bottom);
+    if (top == 0 && bottom == 160)
+    {
+        DrawStageGlow(bg, top, bottom);
+        return true;
+    }
     for (int x = 0; x > VIEW_LEFT; x -= 8)
         DrawLayerRect(bg, x - 8, x, top, bottom, 0, top, 1, 1, true, top, bottom);
     for (int x = 240; x < VIEW_RIGHT; x += 8)
@@ -2786,7 +3142,8 @@ void CtrVideo_Present(void)
      * only waits on the voxel decision in the unlikely case both are asked.
      */
     sStage = sStageRequested;
-    sCentred = sCentredRequested && !sStage;
+    sCentred = sCentredRequested != CTR_CENTRED_NONE && !sStage;
+    sCentredScreen = sCentred ? sCentredRequested : CTR_CENTRED_NONE;
     sBattle = sBattleRequested && !sStage && !sCentred;
     sZoom = sBattle ? CTR_BATTLE_ZOOM : 1.0f;
     /* GBA (120, 112) - the middle of the scene's bottom edge - on screen (200, 192). */
@@ -2992,7 +3349,7 @@ void CtrVideo_Present(void)
 const CtrVideoStats *CtrVideo_GetStats(void) { return &sStats; }
 
 void CtrVideo_SetStage(bool stage) { sStageRequested = stage; }
-void CtrVideo_SetCentred(bool centred) { sCentredRequested = centred; }
+void CtrVideo_SetCentred(unsigned screen) { sCentredRequested = screen < CTR_CENTRED_SCREENS ? screen : CTR_CENTRED_NONE; }
 void CtrVideo_SetBattle(bool battle) { sBattleRequested = battle; }
 
 void CtrVideo_SetLineScroll(unsigned reg, bool wide, const void *values, unsigned lines)
