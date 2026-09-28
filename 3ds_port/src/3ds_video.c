@@ -3882,8 +3882,10 @@ void CtrVideo_Present(void)
      * 3DS is 30 fps in a menu. Without its planes it stays flat until they
      * can be made (before the next frame, see sBandsWanted). */
     /* The battle scene is two passes of its own (RenderBattleScene), and cheap
-     * enough to be composed per eye. */
-    bool planes = stereo && !overworld && !sStage && !sBattle && BandsUsable();
+     * enough to be composed per eye. A stage is not: the intro and the title
+     * draw their waves line by line, and twice that is more than an Old 3DS
+     * has in a frame, so they take the planes like any other 2D screen. */
+    bool planes = stereo && !overworld && !sBattle && BandsUsable();
     if (stereo && !overworld && !sStage && !sBattle && !planes) stereo = false;
     if (bottom) stereo = planes = false;
     if (stereo != sStereo) { gfxSet3D(stereo); sStereo = stereo; }
@@ -3922,8 +3924,7 @@ void CtrVideo_Present(void)
     }
     else
     {
-        /* A stage, drawn from its layer textures, costs little enough to be
-         * composed per eye; otherwise only without memory for the planes. */
+        /* The battle, or a stage without memory for its planes. */
         sPlanes = 0;
         RenderEye(sTop, clear, sStats.stereo);
         RenderEye(sTopRight, clear, -(float)sStats.stereo);
