@@ -631,6 +631,8 @@ typedef struct
 #define NAV_BAR_LINES 32
 #define NAV_HELP_TOP 144
 #define NAV_BODY_SHIFT ((240 - 160) / 2)
+/* How far the map's info window slides down when the map zooms out. */
+#define NAV_INFO_SLIDE 96
 
 static const NavBand sNavMain[] =
 {
@@ -1327,15 +1329,20 @@ static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
     [CTR_CENTRED_POKENAV] = {.backmost = true},
 };
 
+int CtrPokenavList_Bg(void);
+
 /* The backgrounds a centred screen carries out to its edges. */
 static unsigned CentredLayers(const CentredFill *fill)
 {
     unsigned display = Reg(0), best = 4, priority = 0;
+    /* A PokéNav list scrolls behind the screen's frame: the frame is what
+     * goes on past the picture, not the list's next entries. */
+    int list = CtrPokenavList_Bg();
 
     if (!fill->backmost) return fill->layers;
     if ((display & 7) > 2) return 0;
     for (unsigned bg = 0; bg < 4; ++bg)
-        if ((display & (0x100u << bg)) && (Reg(8 + bg * 2) & 3) >= priority
+        if ((display & (0x100u << bg)) && (Reg(8 + bg * 2) & 3) >= priority && (int)bg != list
          && !((display & 7) == 1 && bg == 3) && !((display & 7) == 2 && bg < 2))
         {
             priority = Reg(8 + bg * 2) & 3;
@@ -1849,6 +1856,10 @@ static void LayersRender(void)
         if (layer->valid && layer->hash == hash) continue;
         layer->hash = hash;
         layer->valid = true;
+        /* What the field's cells remember is gone from the texture: the field
+         * composes it whole when it comes back (the PokéNav's bars stayed
+         * over the town, black, in the cells whose tile had not changed). */
+        sCellControl[bg] = ~0u;
         any = true;
         BlendForget();
         C2D_TargetClear(layer->target, 0);
@@ -2412,8 +2423,9 @@ static void DrawAffineBg(unsigned bg)
     matrix.r[0] = FVec4_New(d / det, -b / det, 0, (b * ry - d * rx) / det + CTR_VIEW_X + sLayerShift);
     matrix.r[1] = FVec4_New(-c / det, a / det, 0, (c * rx - a * ry) / det + CTR_VIEW_Y);
     ViewAffine(&matrix);
-    float minX = rx, maxX = rx, minY = ry, maxY = ry;
-    for (unsigned corner = 1; corner < 4; ++corner)
+    /* The box of the map under the clip rectangle's four corners. */
+    float minX = INFINITY, maxX = -INFINITY, minY = INFINITY, maxY = -INFINITY;
+    for (unsigned corner = 0; corner < 4; ++corner)
     {
         float x = (corner & 1) ? sClipX1 : sClipX0;
         float y = (corner & 2) ? sClipY1 : sClipY0;
@@ -2559,37 +2571,40 @@ static void DrawObjects(unsigned priority, bool effects)
 }
 
 /*
- * An affine backmost layer in a band of the PokéNav (the Hoenn map, its sea
- * and all): as DrawNavBackmost does, the band's lines, then the picture's
- * bottom row repeated over the rest, each row moved into place by the view.
+ * An affine backmost layer in a band of the PokéNav (the Hoenn map): the map
+ * carries on around the body as it is, above it and below, at the body's
+ * shift in every band - more of the sea, more of the zoomed map - drawn once.
  */
-static void NavScissor(int top, int bottom);
-
 static void DrawNavBackmostAffine(unsigned bg)
 {
-    const NavBand *band = sNavBand;
-    int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY;
+    int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY, shift = sNavBands[1].shift;
 
-    if (band->top < band->bottom)
-    {
-        if (sClipY0 < band->top) sClipY0 = band->top;
-        if (sClipY1 > band->bottom) sClipY1 = band->bottom;
-        NavScissor(band->top + band->shift, band->bottom + band->shift);
-        if (sClipY0 < sClipY1) DrawAffineBg(bg);
-    }
-    for (int y = band->screenTop - band->shift; y < band->screenBottom - band->shift; y += 8)
-    {
-        if (y + 8 > band->top && y < band->bottom) continue;
-        sViewY = viewY + y - 152;
-        sClipY0 = clipY0 > y ? clipY0 - (y - 152) : 152;
-        sClipY1 = clipY1 < y + 8 ? clipY1 - (y - 152) : 160;
-        NavScissor(y + band->shift, y + band->shift + 8);
-        if (sClipY0 < sClipY1) DrawAffineBg(bg);
-    }
+    sViewY = shift;
+    sClipY0 = clipY0 + viewY - shift;
+    sClipY1 = clipY1 + viewY - shift;
+    if (sClipY0 < sClipY1) DrawAffineBg(bg);
     sViewY = viewY;
     sClipY0 = clipY0;
     sClipY1 = clipY1;
-    NavScissor(band->screenTop, band->screenBottom);
+}
+
+/*
+ * How much lower than its band a background of the PokéNav goes: the map's
+ * info window, which the GBA slides down to the help bar while the map is
+ * zoomed out, keeps to the help bar here too, and rises with the window as it
+ * slides up for the zoomed map.
+ */
+int CtrPokenavRegionMap_InfoBg(void);
+
+static int NavLayerShift(unsigned bg)
+{
+    int scroll;
+
+    if (sNavBand != &sNavSubmenu[1] || CtrPokenavRegionMap_InfoBg() != (int)bg) return 0;
+    scroll = (int)(Reg(0x12 + bg * 4) & 511);
+    scroll = scroll >= 256 ? 512 - scroll : 0;
+    if (scroll > NAV_INFO_SLIDE) scroll = NAV_INFO_SLIDE;
+    return (240 - 160 - NAV_BODY_SHIFT) * scroll / NAV_INFO_SLIDE;
 }
 
 /* Narrows the scissor of a PokéNav band to lines [top, bottom) of the screen. */
@@ -2617,19 +2632,25 @@ static void Layers(unsigned mask)
             if (!(mask & (1u << bg)) || !(display & (0x100u << bg)) || (Reg(8 + bg * 2) & 3) != (unsigned)priority) continue;
             if ((mode == 1 && bg == 3) || (mode == 2 && bg < 2)) continue;
             if (Reg(8 + bg * 2) & 0x40) Error(11, "BG mosaic not supported");
-            int clipY0 = sClipY0, clipY1 = sClipY1;
+            int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY;
             bool lines = sNavBand && !(CentredLayers(&sCentredFills[sCentredScreen]) & (1u << bg));
             if (lines)
             {
+                int lower = NavLayerShift(bg);
+
+                sViewY += lower;
+                sClipY0 -= lower;
+                sClipY1 -= lower;
                 if (sClipY0 < sNavBand->top) sClipY0 = sNavBand->top;
                 if (sClipY1 > sNavBand->bottom) sClipY1 = sNavBand->bottom;
                 if (sClipY0 >= sClipY1)
                 {
+                    sViewY = viewY;
                     sClipY0 = clipY0;
                     sClipY1 = clipY1;
                     continue;
                 }
-                NavScissor(sNavBand->top + sNavBand->shift, sNavBand->bottom + sNavBand->shift);
+                NavScissor(sNavBand->top + sViewY, sNavBand->bottom + sViewY);
             }
             Blend(bg, mask & 32, false);
             /* Which stage a slow frame is in: the layer walk, the sprites or
@@ -2645,6 +2666,7 @@ static void Layers(unsigned mask)
             sLayerShift = shift;
             if (lines)
             {
+                sViewY = viewY;
                 sClipY0 = clipY0;
                 sClipY1 = clipY1;
                 NavScissor(sNavBand->screenTop, sNavBand->screenBottom);
@@ -2825,7 +2847,7 @@ static void ComposeBand(int top, int bottom)
      * WIN0 > WIN1 > outside mask. GPU scissor clips transformed primitives. */
     /* Window rectangles are GBA coordinates; the partition covers the whole
      * viewport so the margins keep the "outside" mask. */
-    int xs[6] = {VIEW_LEFT, VIEW_RIGHT};
+    int xs[6] = {sNavBand ? 0 : VIEW_LEFT, sNavBand ? 240 : VIEW_RIGHT};
     int ys[6] = {top, bottom};
     unsigned nx = 2, ny = 2;
     for (unsigned w = 0; w < 2; ++w)
@@ -3199,6 +3221,9 @@ static void NavCompose(void)
         sNavBand = &sNavBands[b];
         sViewY = sNavBand->shift;
         ClipToView();
+        /* The bottom screen shows the picture's 240 columns. */
+        sClipX0 = 0;
+        sClipX1 = 240;
         sClipY0 = sNavBand->screenTop - sViewY;
         sClipY1 = sNavBand->screenBottom - sViewY;
         sNavClip0 = sNavBand->screenTop;

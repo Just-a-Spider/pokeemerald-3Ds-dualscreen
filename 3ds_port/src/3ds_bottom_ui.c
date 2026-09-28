@@ -114,6 +114,10 @@ bool8 CtrPokenavRibbons_Summary(u16 *selected, u16 *normal, u16 *gift, u16 *gift
 bool8 CtrRegionMap_Cursor(s16 *x, s16 *y, bool8 *zoomed, bool8 *moving);
 bool8 CtrMonMarkings_Menu(s8 *cursor, s16 *x, s16 *y);
 bool8 CtrPokenavCondition_Marking(void);
+void CtrPokenavMenu_SetCursor(int cursor);
+void CtrPokenavList_SetSelected(u16 selected);
+void CtrPokenavMatchCall_SetOption(u16 cursor);
+void CtrMonMarkings_SetCursor(s8 cursor);
 void SetPokemonCryStereo(u32 val);
 extern const struct PokedexEntry gPokedexEntries[];
 
@@ -3311,7 +3315,8 @@ uint16_t CtrBottom_InjectedKeys(void)
  * The PokéNav runs as it is, drawn left of the column by the compositor; a
  * tap on one of its screens becomes the buttons that screen reads, pressed
  * only while the PokéNav waits for input (CtrPokenav_Screen): an option or a
- * list entry is reached with the D-pad and chosen with A, a place on the map
+ * list entry is reached with one press of the D-pad, the cursor put next to
+ * it first (NavNext), and chosen with A; a place on the map
  * is walked to, a ribbon is picked. The POKéNAV button of the column is B,
  * and any other button of it leaves the PokéNav for its own screen.
  */
@@ -3368,6 +3373,23 @@ static struct PokenavMonList *NavMonList(void)
     return GetSubstructPtr(POKENAV_SUBSTRUCT_MON_LIST);
 }
 
+/*
+ * The press that takes a cursor from cursor to target in one step: the
+ * cursor is put right next to the target first (set), so the game's own
+ * move - its sound, the option sliding out - happens once, for the target.
+ */
+static u16 NavNext(int cursor, int target, void (*set)(int))
+{
+    if (target > cursor + 1) set(target - 1);
+    else if (target < cursor - 1) set(target + 1);
+    return target > cursor ? DPAD_DOWN : DPAD_UP;
+}
+
+static void NavSetMenu(int cursor) { CtrPokenavMenu_SetCursor(cursor); }
+static void NavSetList(int cursor) { CtrPokenavList_SetSelected((u16)cursor); }
+static void NavSetOption(int cursor) { CtrPokenavMatchCall_SetOption((u16)cursor); }
+static void NavSetMark(int cursor) { CtrMonMarkings_SetCursor((s8)cursor); }
+
 /* One step of the plan, or 0 while the cursor is not known. */
 static u16 NavStep(bool8 *done)
 {
@@ -3388,15 +3410,15 @@ static u16 NavStep(bool8 *done)
         count = CtrPokenavMenu_Options(&cursor);
         if (sNav.target >= count) break;
         if (cursor == sNav.target) { *done = TRUE; return sNav.finish; }
-        return sNav.target > cursor ? DPAD_DOWN : DPAD_UP;
+        return NavNext(cursor, sNav.target, NavSetMenu);
     case NAV_LIST:
         if (!CtrPokenavList_View(&x, &y, &width, &top, &selected, &shown, &total) || sNav.target >= total) break;
         if (selected == sNav.target) { *done = TRUE; return sNav.finish; }
-        return sNav.target > selected ? DPAD_DOWN : DPAD_UP;
+        return NavNext(selected, sNav.target, NavSetList);
     case NAV_OPTION:
         if (CtrPokenavMatchCall_Input(&option, &options) != 1 || sNav.target >= options) break;
         if (option == sNav.target) { *done = TRUE; return sNav.finish; }
-        return sNav.target > option ? DPAD_DOWN : DPAD_UP;
+        return NavNext(option, sNav.target, NavSetOption);
     case NAV_PARTY:
         if (!(mons = NavMonList()) || sNav.target >= mons->listCount) break;
         if (mons->currIndex == sNav.target) { *done = TRUE; return sNav.finish; }
@@ -3423,7 +3445,7 @@ static u16 NavStep(bool8 *done)
 
         if (!CtrPokenavCondition_Marking() || !CtrMonMarkings_Menu(&mark, &mx, &my)) break;
         if (mark == sNav.target) { *done = TRUE; return sNav.finish; }
-        return sNav.target > mark ? DPAD_DOWN : DPAD_UP;
+        return NavNext(mark, sNav.target, NavSetMark);
     }
     case NAV_LEAVE:
         return B_BUTTON;

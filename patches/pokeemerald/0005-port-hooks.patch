@@ -6303,7 +6303,7 @@ index dd43e310dc8c83c350a0bb714113cc95cc46969e..bb90de7d3ad9c9b3c753bbaf431025d4
 +}
 +#endif
 diff --git a/src/mon_markings.c b/src/mon_markings.c
-index 1de8e413fd09bc2e8008c79ab21f93f4fd54b302..6c1539bedeb74048227fbbe077fe591f87a7c95b 100644
+index 1de8e413fd09bc2e8008c79ab21f93f4fd54b302..b83ec85bbc6f5b525cd619004e46108d8af35fbc 100644
 --- a/src/mon_markings.c
 +++ b/src/mon_markings.c
 @@ -9,6 +9,9 @@
@@ -6330,7 +6330,7 @@ index 1de8e413fd09bc2e8008c79ab21f93f4fd54b302..6c1539bedeb74048227fbbe077fe591f
      sMenu->framePalette = frame->pal;
      sMenu->tileLoadState = 0;
      CpuFill16(0, sMenu->windowSpriteTiles, sizeof(sMenu->windowSpriteTiles));
-@@ -612,5 +621,25 @@ static struct Sprite *CreateMarkingComboSprite(u16 tileTag, u16 paletteTag, cons
+@@ -612,5 +621,32 @@ static struct Sprite *CreateMarkingComboSprite(u16 tileTag, u16 paletteTag, cons
  // Update what combination is shown, used for sprites created with CreateMonMarkingComboSprite
  void UpdateMonMarkingTiles(u8 markings, void *dest)
  {
@@ -6354,6 +6354,13 @@ index 1de8e413fd09bc2e8008c79ab21f93f4fd54b302..6c1539bedeb74048227fbbe077fe591f
 +    *x = sMenu->windowSprites[0]->x - 32;
 +    *y = sMenu->windowSprites[0]->y - 32;
 +    return TRUE;
++}
++
++// Puts the cursor on a row (CtrPokenavMenu_SetCursor).
++void CtrMonMarkings_SetCursor(s8 cursor)
++{
++    if (sMenu != NULL && cursor >= 0 && cursor <= SELECTION_CANCEL)
++        sMenu->cursorPos = cursor;
 +}
 +#endif
 diff --git a/src/multiboot.c b/src/multiboot.c
@@ -8058,15 +8065,17 @@ index 1ebf6edbe9a286b0e05944ca7b51567e14d830d9..cde8c2132997e5e5256833ac0b4152db
 +}
 +#endif
 diff --git a/src/pokenav_list.c b/src/pokenav_list.c
-index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..155803d7266f846c8d141d46f5f6f10c0fa19912 100644
+index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..4d1f567a49945c411b72c53f535799175bcb7317 100644
 --- a/src/pokenav_list.c
 +++ b/src/pokenav_list.c
-@@ -1009,3 +1009,24 @@ static bool32 CopyPokenavListMenuTemplate(struct PokenavListSub *dest, const str
+@@ -1009,3 +1009,53 @@ static bool32 CopyPokenavListMenuTemplate(struct PokenavListSub *dest, const str
      dest->downArrow = NULL;
      return 1;
  }
 +
 +#ifdef PLATFORM_3DS
++bool8 CtrPokenav_IsOpen(void);
++
 +// The list on show, for the 3DS bottom screen: its window in pixels (item i
 +// on screen is 16 lines from y + (i - top) * 16), the item at the top, the
 +// chosen one, how many fit and how many there are.
@@ -8084,6 +8093,33 @@ index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..155803d7266f846c8d141d46f5f6f10c
 +    *shown = list->windowState.entriesOnscreen;
 +    *count = list->windowState.listLength;
 +    return TRUE;
++}
++
++// The background the list is printed on, -1 without a list: it scrolls
++// behind the screen's frame, so the 3DS bottom screen does not carry it on
++// past the picture as it does the frame.
++int CtrPokenavList_Bg(void)
++{
++    struct PokenavList *list = GetSubstructPtr(POKENAV_SUBSTRUCT_LIST);
++
++    if (!CtrPokenav_IsOpen() || list == NULL)
++        return -1;
++    return list->sub.listWindow.bg;
++}
++
++// Puts the selection on an item on show, for the D-pad press that follows to
++// move it on to the one tapped (CtrPokenavMenu_SetCursor).
++void CtrPokenavList_SetSelected(u16 selected)
++{
++    struct PokenavList *list = GetSubstructPtr(POKENAV_SUBSTRUCT_LIST);
++    struct PokenavListWindowState *windowState;
++
++    if (list == NULL)
++        return;
++    windowState = &list->windowState;
++    if (selected >= windowState->windowTopIndex && selected < windowState->listLength
++     && selected - windowState->windowTopIndex < windowState->entriesOnscreen)
++        windowState->selectedIndexOffset = selected - windowState->windowTopIndex;
 +}
 +#endif
 diff --git a/src/pokenav_main_menu.c b/src/pokenav_main_menu.c
@@ -8336,7 +8372,7 @@ index dde725d8bd465518929d48249a409f4907287b8b..7e3831345174feee76426c334f5d7e19
 diff --git a/src/pokenav_match_call_list.c b/src/pokenav_match_call_list.c
 old mode 100755
 new mode 100644
-index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..e000cf291da494ec1c6dc1474bc74698f4c98529
+index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..11370b17bacc9fdaad2932d2dd49283e26402197
 --- a/src/pokenav_match_call_list.c
 +++ b/src/pokenav_match_call_list.c
 @@ -306,7 +306,7 @@ struct PokenavMatchCallEntry *GetMatchCallList(void)
@@ -8357,7 +8393,7 @@ index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..e000cf291da494ec1c6dc1474bc74698
  {
      int mapGroup = gRematchTable[rematchIndex].mapGroup;
      int mapNum = gRematchTable[rematchIndex].mapNum;
-@@ -515,3 +515,26 @@ static bool32 ShouldDoNearbyMessage(void)
+@@ -515,3 +515,35 @@ static bool32 ShouldDoNearbyMessage(void)
  
      return FALSE;
  }
@@ -8383,12 +8419,21 @@ index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..e000cf291da494ec1c6dc1474bc74698
 +        return 3;
 +    return 0xFF;
 +}
++
++// Puts the options' cursor on an option (CtrPokenavMenu_SetCursor).
++void CtrPokenavMatchCall_SetOption(u16 cursor)
++{
++    struct Pokenav_MatchCallMenu *state = GetSubstructPtr(POKENAV_SUBSTRUCT_MATCH_CALL_MAIN);
++
++    if (state != NULL && cursor <= state->maxOptionId)
++        state->optionCursorPos = cursor;
++}
 +#endif
 diff --git a/src/pokenav_menu_handler.c b/src/pokenav_menu_handler.c
-index d67f61c1ea46c9b36e5080da106156db51e3ff86..72eca93516f9d2f08984b39e61b54a82e09300d5 100644
+index d67f61c1ea46c9b36e5080da106156db51e3ff86..09fe4097c92df021e082bdadc93a891953ff7946 100644
 --- a/src/pokenav_menu_handler.c
 +++ b/src/pokenav_menu_handler.c
-@@ -511,3 +511,17 @@ u16 GetHelpBarTextId(void)
+@@ -511,3 +511,27 @@ u16 GetHelpBarTextId(void)
      struct Pokenav_Menu *menu = GetSubstructPtr(POKENAV_SUBSTRUCT_MAIN_MENU_HANDLER);
      return menu->helpBarIndex;
  }
@@ -8404,6 +8449,16 @@ index d67f61c1ea46c9b36e5080da106156db51e3ff86..72eca93516f9d2f08984b39e61b54a82
 +        return 0;
 +    *cursor = menu->cursorPos;
 +    return sLastCursorPositions[menu->menuType] + 1;
++}
++
++// Puts the cursor on an option without moving the options: the D-pad press
++// that follows moves it on to the one tapped, as the game does, in one step.
++void CtrPokenavMenu_SetCursor(int cursor)
++{
++    struct Pokenav_Menu *menu = GetSubstructPtr(POKENAV_SUBSTRUCT_MAIN_MENU_HANDLER);
++
++    if (menu != NULL && cursor >= 0 && cursor <= sLastCursorPositions[menu->menuType])
++        menu->cursorPos = cursor;
 +}
 +#endif
 diff --git a/src/pokenav_menu_handler_gfx.c b/src/pokenav_menu_handler_gfx.c
@@ -8521,7 +8576,7 @@ index a4cdf48980c6e14a2da1c0cfbc00aa999bc10e18..8c5660ff5e326186ab0eba09afa2a0ce
 diff --git a/src/pokenav_region_map.c b/src/pokenav_region_map.c
 old mode 100755
 new mode 100644
-index 8475bbacb8ca74074f802049007cda103343e513..f81ff42966390ec5b1dc9e9bbe726578e96fa5ec
+index 8475bbacb8ca74074f802049007cda103343e513..c8bfd19660b37c9f72850188bbc8d61e4699e6bc
 --- a/src/pokenav_region_map.c
 +++ b/src/pokenav_region_map.c
 @@ -41,7 +41,7 @@ struct Pokenav_RegionMapGfx
@@ -8562,6 +8617,24 @@ index 8475bbacb8ca74074f802049007cda103343e513..f81ff42966390ec5b1dc9e9bbe726578
  {
      int i = 0;
      while (1)
+@@ -740,3 +740,17 @@ static void SetCityZoomTextInvisibility(bool32 invisible)
+     for (i = 0; i < (int)ARRAY_COUNT(state->cityZoomTextSprites); i++)
+         state->cityZoomTextSprites[i]->invisible = invisible;
+ }
++
++#ifdef PLATFORM_3DS
++bool8 CtrPokenav_IsOpen(void);
++
++// The background of the map's info window, for the 3DS bottom screen: it
++// keeps the window on the help bar while the map is zoomed out, as the GBA
++// screen does. -1 without the map.
++int CtrPokenavRegionMap_InfoBg(void)
++{
++    if (!CtrPokenav_IsOpen() || GetSubstructPtr(POKENAV_SUBSTRUCT_REGION_MAP_ZOOM) == NULL)
++        return -1;
++    return sMapSecInfoWindowTemplate.bg;
++}
++#endif
 diff --git a/src/pokenav_ribbons_summary.c b/src/pokenav_ribbons_summary.c
 index c799daf57bbf54738ee761676271ed9a7955c709..4b368f5c175ff8ec3b80bd677051e704007db1f8 100644
 --- a/src/pokenav_ribbons_summary.c
