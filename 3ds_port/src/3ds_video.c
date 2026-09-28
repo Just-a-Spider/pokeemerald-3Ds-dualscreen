@@ -930,8 +930,10 @@ static void FadeCorner(C2D_ImageTint *tint, C2D_Corner corner, float f, float k,
  * something drawn over part of it: the title screen's bottom row is its
  * backdrop with the tail and coils of Rayquaza across the middle, and those
  * repeated downwards are streaks. Such a row carries on as its plain tile,
- * and the objects stay in the picture. The entry that fills at least 60% of
- * the row, or ~0u when none does.
+ * and the objects stay in the picture. The entry that fills at least 40% of
+ * the row, or ~0u when none does: Rayquaza's coils take half of that row, its
+ * backdrop tile only the other half, and anything spread over less than 40%
+ * of a row is the picture itself, not a band behind it.
  */
 static unsigned EdgeRowPlain(unsigned bg, int y)
 {
@@ -954,7 +956,7 @@ static unsigned EdgeRowPlain(unsigned bg, int y)
         for (unsigned k = 0; k < 30; ++k) count += entries[k] == entries[c];
         if (count > bestCount) { bestCount = count; best = entries[c]; }
     }
-    return bestCount * 10 >= 30 * 6 ? best : ~0u;
+    return bestCount * 10 >= 30 * 4 ? best : ~0u;
 }
 
 static void DrawEdgeRegion(unsigned bg, int x0, int x1, int y0, int y1, int top, int bottom)
