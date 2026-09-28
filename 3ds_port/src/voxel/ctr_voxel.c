@@ -54,7 +54,14 @@
 #define CTR_VOXEL_TRACE 0
 #endif
 
-#define VOXEL_NEAR 0.1f
+/*
+ * The depth buffer is 16-bit. At 0.1 the near plane spent its precision on the
+ * first tile before the eye, and at the player's distance (8-17 units) a cast
+ * shadow 0.03 over the ground no longer told apart from it: striped, and gone
+ * next to the feet. Nothing on screen comes within a unit of the eye (the
+ * lowest camera is ~4.5 up), and 1.0 gives ten times the resolution.
+ */
+#define VOXEL_NEAR 1.0f
 #define VOXEL_FAR 200.0f
 
 /* The logical surface is a 512x256 texture of which the game uses the top-left
