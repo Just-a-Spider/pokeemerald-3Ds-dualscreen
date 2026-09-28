@@ -27,6 +27,8 @@ STEPS = [
     ("gen_voxel_relief.py", ["--output", "3ds_port/romfs/voxel/relief.bin"], "3ds_port/romfs/voxel/relief.bin"),
     ("gen_voxel_buildings.py", ["--output", "3ds_port/romfs/voxel/buildings.bin"],
      "3ds_port/romfs/voxel/buildings.bin"),
+    # not voxel data, but made the same way: the intro's leaves scene, widened
+    ("gen_intro_margins.py", ["--output", "3ds_port/romfs/stage/leaves.bin"], "3ds_port/romfs/stage/leaves.bin"),
 ]
 
 

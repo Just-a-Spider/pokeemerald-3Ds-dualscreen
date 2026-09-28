@@ -55,6 +55,10 @@ def binary_inputs(root: Path) -> list[str]:
             for i in range(16):
                 if (folder / "palettes" / ("%02d.gbapal" % i)).exists():
                     files.append(rel + "/palettes/%02d.gbapal" % i)
+    # The intro's leaves scene, for scripts/gen_intro_margins.py.
+    scene = root / "graphics/intro/scene_1"
+    files += [p.relative_to(root).as_posix() for p in
+              [scene / "bg.4bpp"] + [scene / ("bg%d_map.bin" % i) for i in range(4)] if p.exists()]
     seen, ordered = set(), []
     for f in files:
         if f not in seen:

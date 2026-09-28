@@ -91,6 +91,8 @@ ROMFS_SHADER_OUTS += romfs/voxel/signposts.bin
 ROMFS_SHADER_OUTS += romfs/voxel/buildings.bin
 ROMFS_SHADER_OUTS += romfs/voxel/relief.bin
 endif
+# New art around the intro's leaves scene (scripts/gen_intro_margins.py).
+ROMFS_SHADER_OUTS += romfs/stage/leaves.bin
 
 FULL_OBJECTS := $(FULL_C_OBJS) $(FULL_DATA_OBJS) $(BACKEND_OBJS)
 # The keep table is only referenced from the payload, which is not linked,
@@ -317,6 +319,11 @@ romfs/voxel/relief.bin: scripts/gen_voxel_relief.py scripts/voxel_cells.py \
 		$(ROOT)/data/layouts/layouts.json
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_voxel_relief.py --output $@
+
+romfs/stage/leaves.bin: scripts/gen_intro_margins.py $(ROOT)/graphics/intro/scene_1/bg.4bpp \
+		$(wildcard $(ROOT)/graphics/intro/scene_1/bg?_map.bin)
+	@mkdir -p $(@D)
+	"$(PYTHON)" scripts/gen_intro_margins.py --output $@
 
 HOST_VOXEL_DEFS := -D'PORT_LOG(...)=((void)0)' -DVOXEL_HOST_FILES
 

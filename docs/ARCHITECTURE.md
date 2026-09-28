@@ -53,9 +53,13 @@ The logical display stays GBA-sized for game logic; the field of view is
 widened (`FIELD_VIEW_*`) and screens staged as one GBA picture (title,
 intro, credits, battle, region map, title menu and professor's speech, naming
 screen, clock) are composed centred with margins from their own art
-(`3ds_port/compat/ctr_gba_*.h`): a still full-screen picture glows out into
-black from the colours of its edge, a scrolling one wraps, and a menu screen
-carries its plain or patterned background out to the edges.
+(`3ds_port/compat/ctr_gba_*.h`): a still picture carries its edge out and
+fades it into black, a scrolling one wraps, and a menu screen carries its
+plain or patterned background out to the edges. The intro's leaves scene has
+margins of new art instead (`3ds_port/scripts/gen_intro_margins.py`): the
+shapes its edge cuts carried on from the edge's own pixels, and grass, bushes,
+plants and hills drawn for it. Because it carries those pixels on, the builder
+makes it from the player's ROM (`stage/leaves.bin`), as it does the voxel data.
 
 ## Memory
 

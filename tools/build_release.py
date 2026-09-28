@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PORT = ROOT / "3ds_port"
 DIST = ROOT / "dist"
 GENERATORS = ["gen_voxel_regions.py", "gen_voxel_sign_masks.py",
-              "gen_voxel_relief.py", "gen_voxel_buildings.py"]
+              "gen_voxel_relief.py", "gen_voxel_buildings.py", "gen_intro_margins.py"]
 VOXELGEN_FILES = ["src/voxel/voxel_regions.h"]
 
 

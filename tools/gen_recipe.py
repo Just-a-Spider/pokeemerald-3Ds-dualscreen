@@ -40,6 +40,7 @@ GENERATED = {
     "voxel/signposts.bin": "voxel",
     "voxel/buildings.bin": "voxel",
     "voxel/relief.bin": "voxel",
+    "stage/leaves.bin": "stage",
 }
 # Payloads whose relocation sites are pointers into the executable.
 BUNDLES = {
