@@ -1549,8 +1549,8 @@ static void DrawTextBg(unsigned bg)
 /*
  * Layer textures. A text background is composed once, unscrolled, into a
  * texture of its own that repeats exactly like its tilemap wraps, and kept
- * there for as long as its tilemap, its tiles and its palettes stay the same
- * (LayerHash). Drawing it is then a handful of quads cut from that texture
+ * there, only the cells whose tile, entry or palette changed drawn again
+ * (LayerRenderCells). Drawing it is then a handful of quads cut from that texture
  * instead of one quad per 8x8 tile:
  *
  * - a background that scrolls per line (the waves of the intro and the title)
@@ -1571,7 +1571,7 @@ typedef struct
 {
     C3D_Tex tex;
     C3D_RenderTarget *target;
-    uint32_t hash, usedFrame;
+    uint32_t usedFrame;
     bool valid;
 } LayerTexture;
 static LayerTexture sLayers[4];
@@ -1697,44 +1697,8 @@ static void LayersPrepare(void)
 }
 
 /*
- * Everything a layer texture is made of: its control register, its tilemap,
- * the tiles the tilemap uses and the version of every palette it can use.
- * Any change among them recomposes the texture; nothing else does.
- */
-static uint32_t LayerHash(unsigned bg)
-{
-    unsigned control = Reg(8 + bg * 2), size = control >> 14;
-    unsigned map = ((control >> 8) & 31) * 0x800;
-    unsigned chars = ((control >> 2) & 3) * 0x4000;
-    bool color256 = (control & 128) != 0;
-    unsigned words = (size == 0 ? 1024 : size == 3 ? 4096 : 2048) / 2;
-    const uint32_t *entries = (const uint32_t *)(sMemory.vram + map);
-    uint32_t hash = 2166136261u ^ control;
-    unsigned last = 0, bytes;
-
-    if (map + words * 4 > 0x10000) words = (0x10000 - map) / 4;
-    for (unsigned i = 0; i < words; ++i)
-    {
-        uint32_t pair = entries[i];
-
-        hash = (hash ^ pair) * 16777619u;
-        if ((pair & 1023) > last) last = pair & 1023;
-        if (((pair >> 16) & 1023) > last) last = (pair >> 16) & 1023;
-    }
-    bytes = (last + 1) * (color256 ? 64 : 32);
-    if (chars + bytes > 0x10000) bytes = 0x10000 - chars;
-    {
-        const uint32_t *tiles = (const uint32_t *)(sMemory.vram + chars);
-
-        for (unsigned i = 0; i < bytes / 4; ++i) hash = (hash ^ tiles[i]) * 16777619u;
-    }
-    if (color256) hash = (hash ^ sPaletteVersion[32]) * 16777619u;
-    else for (unsigned bank = 0; bank < 16; ++bank) hash = (hash ^ sPaletteVersion[bank]) * 16777619u;
-    return hash;
-}
-
-/*
- * The field's backgrounds, kept in their textures cell by cell.
+ * Every layer texture - the field's, the stages', the line windows' - is kept
+ * cell by cell.
  *
  * Walked tile by tile, the 2D field is three 400x240 layers, about 4700 quads
  * a frame: 20 ms of CPU on an Old 3DS, so it never made 60 fps. Composed into
@@ -1746,6 +1710,11 @@ static uint32_t LayerHash(unsigned bg)
  * drawn again: a row or a column as the camera moves, the animated tiles when
  * they animate. A frame where most cells changed (a new map, a palette fade)
  * is recomposed whole.
+ *
+ * The stages had a hash of the whole layer instead, and the title screen
+ * cycles the colour of Rayquaza's markings every fourth frame: the whole
+ * 1024-tile layer was drawn again each time, a dropped frame on an Old 3DS
+ * for a dozen tiles that changed.
  */
 #define LAYER_CELLS 4096
 static uint32_t sCellSig[4][LAYER_CELLS];
@@ -1880,53 +1849,7 @@ static void LayersRender(void)
     bool any = false;
 
     for (unsigned bg = 0; bg < 4; ++bg)
-    {
-        LayerTexture *layer = &sLayers[bg];
-        unsigned control = Reg(8 + bg * 2), size = control >> 14;
-        unsigned map = ((control >> 8) & 31) * 0x800;
-        unsigned chars = ((control >> 2) & 3) * 0x4000;
-        bool color256 = (control & 128) != 0;
-        unsigned columns = (size & 1) ? 64 : 32, rows = (size & 2) ? 64 : 32;
-        uint32_t hash;
-
-        if (!sLayerReady[bg]) continue;
-        if (sFieldLayers)
-        {
-            if (LayerRenderCells(bg)) any = true;
-            continue;
-        }
-        hash = LayerHash(bg);
-        if (layer->valid && layer->hash == hash) continue;
-        layer->hash = hash;
-        layer->valid = true;
-        /* What the field's cells remember is gone from the texture: the field
-         * composes it whole when it comes back (the PokéNav's bars stayed
-         * over the town, black, in the cells whose tile had not changed). */
-        sCellControl[bg] = ~0u;
-        any = true;
-        BlendForget();
-        C2D_TargetClear(layer->target, 0);
-        C2D_SceneBegin(layer->target);
-        C2D_ViewReset();
-        Blend(bg, false, false);
-        for (unsigned row = 0; row < rows; ++row)
-        {
-            unsigned rowBase = map + CtrVideo_TextMapOffset(0, row, size);
-
-            for (unsigned column = 0; column < columns; ++column)
-            {
-                unsigned entry = Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
-                unsigned address = chars + (entry & 1023) * (color256 ? 64 : 32);
-                int slot;
-
-                if (address >= 0x10000) continue;
-                slot = GetTileSlot(address, entry >> 12, color256);
-                if (slot >= 0)
-                    DrawSlot(slot, column * 8, row * 8, entry & 1024, entry & 2048);
-            }
-        }
-        C2D_Flush();
-    }
+        if (sLayerReady[bg] && LayerRenderCells(bg)) any = true;
     /* Rendering to a texture and then sampling it needs a command split. */
     if (any) C3D_FrameSplit(0);
 }
