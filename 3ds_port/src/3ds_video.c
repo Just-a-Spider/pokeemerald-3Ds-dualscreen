@@ -873,6 +873,20 @@ static float EdgeFade(int x, int y, int top, int bottom)
  */
 static bool sUnderlaid;
 
+/*
+ * Rayquaza on the title screen stands on the bottom edge of the screen, as it
+ * does on the GBA's, rather than 40 lines above it: its layer is drawn that
+ * much lower, so nothing has to be made up under its coils, and the room it
+ * leaves above is its sky, carried up from its top row and faded as usual.
+ */
+#define TITLE_RAYQUAZA_DROP (CTR_GAME_HEIGHT - 160 - CTR_STAGE_Y)
+int CtrTitleScreen_RayquazaBg(void);
+
+static int StageLayerDrop(unsigned bg)
+{
+    return sStage && CtrTitleScreen_RayquazaBg() == (int)bg ? TITLE_RAYQUAZA_DROP : 0;
+}
+
 static void StageUnderlay(void)
 {
     unsigned display = Reg(0), mode = display & 7;
@@ -890,7 +904,8 @@ static void StageUnderlay(void)
     ViewBase();
     C2D_DrawRectSolid(0, 0, 0, CTR_VIEW_X - FADE_ACROSS, CTR_GAME_HEIGHT, black);
     C2D_DrawRectSolid(CTR_VIEW_X + 240 + FADE_ACROSS, 0, 0, CTR_VIEW_X - FADE_ACROSS, CTR_GAME_HEIGHT, black);
-    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_VIEW_Y - FADE_DOWN, black);
+    /* Over a dropped layer the fade starts that much lower. */
+    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_VIEW_Y + StageLayerDrop(0) - FADE_DOWN, black);
     C2D_DrawRectSolid(0, CTR_VIEW_Y + 160 + FADE_DOWN, 0, CTR_GAME_WIDTH, CTR_VIEW_Y - FADE_DOWN, black);
     sUnderlaid = true;
 }
@@ -2635,8 +2650,12 @@ static void Layers(unsigned mask)
             if (!(mask & (1u << bg)) || !(display & (0x100u << bg)) || (Reg(8 + bg * 2) & 3) != (unsigned)priority) continue;
             if ((mode == 1 && bg == 3) || (mode == 2 && bg < 2)) continue;
             if (Reg(8 + bg * 2) & 0x40) Error(11, "BG mosaic not supported");
-            int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY;
+            int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY, drop = StageLayerDrop(bg);
             bool lines = sNavBand && !(CentredLayers(&sCentredFills[sCentredScreen]) & (1u << bg));
+
+            sViewY += drop;
+            sClipY0 -= drop;
+            sClipY1 -= drop;
             if (lines)
             {
                 int lower = NavLayerShift(bg);
@@ -2667,13 +2686,10 @@ static void Layers(unsigned mask)
             else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
                 DrawTextBg(bg);
             sLayerShift = shift;
-            if (lines)
-            {
-                sViewY = viewY;
-                sClipY0 = clipY0;
-                sClipY1 = clipY1;
-                NavScissor(sNavBand->screenTop, sNavBand->screenBottom);
-            }
+            sViewY = viewY;
+            sClipY0 = clipY0;
+            sClipY1 = clipY1;
+            if (lines) NavScissor(sNavBand->screenTop, sNavBand->screenBottom);
             sBgTicks += svcGetSystemTick() - start;
         }
         if ((mask & 16) && (display & 0x1000))

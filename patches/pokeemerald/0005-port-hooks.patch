@@ -11504,7 +11504,7 @@ index 595ba08a6f51bc8749b0010f92dbb5f429d92228..27e043c3b1cff1225439e8c1bfeb9a63
  }
  
 diff --git a/src/title_screen.c b/src/title_screen.c
-index 1d605d1fc056e63002b3f7a6c1fd9cb48c770531..c034733a9d5e17eacde10d78536b1316f3122213 100644
+index 1d605d1fc056e63002b3f7a6c1fd9cb48c770531..ae9a812d54a855ac3bd045eef6fc9598fd64b7fb 100644
 --- a/src/title_screen.c
 +++ b/src/title_screen.c
 @@ -29,12 +29,26 @@ enum {
@@ -11729,6 +11729,18 @@ index 1d605d1fc056e63002b3f7a6c1fd9cb48c770531..c034733a9d5e17eacde10d78536b1316
      }
  }
  
+@@ -867,3 +936,11 @@ static void UpdateLegendaryMarkingColor(u8 frameNum)
+         LoadPalette(&color, BG_PLTT_ID(14) + 15, sizeof(color));
+    }
+ }
++
++#ifdef PLATFORM_3DS
++// The background Rayquaza is drawn on while the title screen is up, else -1.
++int CtrTitleScreen_RayquazaBg(void)
++{
++    return gMain.callback2 == MainCB2 ? 0 : -1;
++}
++#endif
 diff --git a/src/trade.c b/src/trade.c
 index e9c2984087302e2858d7617fce6d0408d3427513..4e573976a45a0b277803f5ca9e881376994f5872 100644
 --- a/src/trade.c
