@@ -262,10 +262,10 @@ static bool sFieldLayers;
  * which is where the time goes, runs once per frame however many eyes there
  * are.
  *
- * A layer that blends with what is underneath it needs that underneath in the
- * same surface, so the planes are cut only where nothing blends across, and
- * the last one holds every remaining priority. A frame where everything blends
- * ends up as a single plane: no depth, but no extra cost either.
+ * A layer that blends with what is underneath it needs that underneath in its
+ * own surface: its plane is given the picture behind it, colour only, before
+ * its layers are drawn (RenderBands). The last plane holds every remaining
+ * priority.
  */
 /*
  * Three planes rather than one per priority: each one costs a surface to clear
@@ -288,8 +288,15 @@ static uint32_t sBandsRetryFrame;
 static bool sBandUsed[CTR_BANDS];
 /* Depth planes the last frame used, 0 when it was composed per eye. */
 static unsigned sPlanes;
-/* Priorities the current composition pass may draw. */
-static unsigned sPriorityMask = 15;
+/*
+ * What the current composition pass may draw, by depth slot: bit 2p is the
+ * sprites of priority p, bit 2p+1 its backgrounds - front to back in that
+ * order, as the GBA stacks them.
+ */
+#define SLOTS_ALL 255u
+#define SLOT_OBJ(p) (1u << ((p) * 2))
+#define SLOT_BG(p) (2u << ((p) * 2))
+static unsigned sPriorityMask = SLOTS_ALL;
 
 /*
  * Last blend configuration submitted. Reset whenever something else may have
@@ -321,11 +328,67 @@ static unsigned Read16(unsigned offset)
     return sMemory.vram[offset] | (sMemory.vram[offset + 1] << 8);
 }
 
+/*
+ * A palette fade as a tint. The game fades by rewriting every colour each
+ * frame (BlendPalette, src/util.c), and every colour of a layer texture
+ * changing is every cell of it redrawn: the intro's four 256x512 layers,
+ * 8192 tiles decoded and drawn a frame, 30 ms on an Old 3DS for as long as a
+ * fade lasts. When the backgrounds' palette is exactly the unfaded one faded
+ * towards black or white, the tiles keep the unfaded colours and the fade is
+ * drawn as a tint on the layers (Blend, LayerBrightness), which costs
+ * nothing. Only an exact match counts, so any other palette effect is drawn
+ * as before. Sprites keep the faded colours: they are a few tiles.
+ */
+extern uint16_t gPlttBufferUnfaded[];
+static float sPaletteFade;
+static bool sPaletteFadeWhite;
+/* Set while a layer texture is drawn: it holds the unfaded colours. */
+static bool sInLayerTexture;
+
+static uint16_t FadeColor(unsigned color, unsigned to, unsigned y)
+{
+    int r = color & 31, g = (color >> 5) & 31, b = (color >> 10) & 31;
+    int tr = to & 31, tg = (to >> 5) & 31, tb = (to >> 10) & 31;
+
+    r += ((tr - r) * (int)y) >> 4;
+    g += ((tg - g) * (int)y) >> 4;
+    b += ((tb - b) * (int)y) >> 4;
+    return (uint16_t)(r | g << 5 | b << 10);
+}
+
+/* The coefficient (1-16) the background colours are faded by, or 0. */
+static unsigned DetectPaletteFade(bool *white)
+{
+    const uint16_t *now = sMemory.palette, *unfaded = gPlttBufferUnfaded;
+
+    if (!memcmp(now, unfaded, 512)) return 0;
+    for (unsigned w = 0; w < 2; ++w)
+        for (unsigned y = 1; y <= 16; ++y)
+        {
+            unsigned i = 0;
+
+            while (i < 256 && FadeColor(unfaded[i], w ? 0x7fff : 0, y) == (now[i] & 0x7fff)) ++i;
+            if (i == 256)
+            {
+                *white = w;
+                return y;
+            }
+        }
+    return 0;
+}
+
 static void UpdatePalette(void)
 {
     bool bgChanged = false, objChanged = false;
+    unsigned fade = DetectPaletteFade(&sPaletteFadeWhite);
+    const uint16_t *bgSource = fade ? gPlttBufferUnfaded : sMemory.palette;
+
+    sPaletteFade = fade / 16.0f;
     for (unsigned bank = 0; bank < 32; ++bank)
-        if (memcmp(sPalette + bank * 16, sMemory.palette + bank * 16, 32))
+    {
+        const uint16_t *source = bank < 16 ? bgSource : sMemory.palette;
+
+        if (memcmp(sPalette + bank * 16, source + bank * 16, 32))
         {
             unsigned group = bank < 16 ? 32 : 33;
             if (bank < 16 ? !bgChanged : !objChanged)
@@ -334,8 +397,8 @@ static void UpdatePalette(void)
             for (unsigned index = 0; index < 16; ++index)
             {
                 unsigned p = bank * 16 + index;
-                if (sPalette[p] == sMemory.palette[p]) continue;
-                sPalette[p] = sMemory.palette[p];
+                if (sPalette[p] == source[p]) continue;
+                sPalette[p] = source[p];
                 sTexturePalette[p] = CtrVideo_RGBA5551(sPalette[p]);
                 sPaletteChanges[bank][0] |= 1u << index;
                 unsigned entry = p & 255;
@@ -344,6 +407,7 @@ static void UpdatePalette(void)
             ++sPaletteVersion[bank];
             if (bank < 16) bgChanged = true; else objChanged = true;
         }
+    }
     if (bgChanged) ++sPaletteVersion[32];
     if (objChanged) ++sPaletteVersion[33];
 }
@@ -465,7 +529,12 @@ static void Blend(unsigned layer, bool effects, bool semiTransparent)
     C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA,
                   GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ZERO);
     unsigned control = Reg(0x50), effect = (control >> 6) & 3;
-    C2D_PlainImageTint(&sTint, C2D_Color32(255, 255, 255, 255), 0);
+    /* The palette fade (UpdatePalette) is on a background whatever the
+     * windows say; the brightness effect of BLDY replaces it below. */
+    bool paletteTint = sPaletteFade > 0 && !sInLayerTexture && (layer < 4 || layer == 5);
+    unsigned fadeTo = sPaletteFadeWhite ? 255 : 0;
+
+    C2D_PlainImageTint(&sTint, C2D_Color32(fadeTo, fadeTo, fadeTo, 255), paletteTint ? sPaletteFade : 0);
     if (!effects) return;
     if ((effect == 1 && (control & (1u << layer))) || semiTransparent)
     {
@@ -923,14 +992,19 @@ static void StageUnderlay(void)
 
 /*
  * The GBA brightness effect a layer is under (BLDCNT effect 2 or 3), as the
- * colour it moves towards and how far; 0 when there is none.
+ * colour it moves towards and how far; else a background's palette fade drawn
+ * as a tint (UpdatePalette); 0 when there is neither.
  */
 static float LayerBrightness(unsigned layer, bool *white)
 {
     unsigned control = Reg(0x50), effect = (control >> 6) & 3;
 
     *white = effect == 2;
-    if (!(control & (1u << layer)) || effect < 2) return 0.0f;
+    if (!(control & (1u << layer)) || effect < 2)
+    {
+        *white = sPaletteFadeWhite;
+        return sInLayerTexture || layer > 5 || layer == 4 ? 0.0f : sPaletteFade;
+    }
     return Min(Reg(0x54) & 31, 16) / 16.0f;
 }
 
@@ -1788,6 +1862,7 @@ static bool LayerRenderCells(unsigned bg)
     sCellControl[bg] = control;
 
     BlendForget();
+    sInLayerTexture = true;
     if (full || count > cells / 2)
     {
         C2D_TargetClear(layer->target, 0);
@@ -1821,6 +1896,8 @@ static bool LayerRenderCells(unsigned bg)
                      cellEntry[cell] & 1024, cellEntry[cell] & 2048);
     }
     C2D_Flush();
+    sInLayerTexture = false;
+    BlendForget();
     return true;
 }
 
@@ -2600,10 +2677,10 @@ static void Layers(unsigned mask)
     for (int priority = 3; priority >= 0; --priority)
     {
         /* One depth plane at a time while composing them separately. */
-        if (!(sPriorityMask & (1u << priority))) continue;
+        if (!(sPriorityMask & (SLOT_OBJ(priority) | SLOT_BG(priority)))) continue;
         /* Priority is the depth scale: 3 stays at the screen plane. */
         sLayerShift = (sLayerOrigin + sParallax * (3 - priority)) / sShiftZoom;
-        for (int bg = 3; bg >= 0; --bg)
+        for (int bg = 3; bg >= 0 && (sPriorityMask & SLOT_BG(priority)); --bg)
         {
             if (!(mask & (1u << bg)) || !(display & (0x100u << bg)) || (Reg(8 + bg * 2) & 3) != (unsigned)priority) continue;
             if ((mode == 1 && bg == 3) || (mode == 2 && bg < 2)) continue;
@@ -2650,7 +2727,7 @@ static void Layers(unsigned mask)
             if (lines) NavScissor(sNavBand->screenTop, sNavBand->screenBottom);
             sBgTicks += svcGetSystemTick() - start;
         }
-        if ((mask & 16) && (display & 0x1000))
+        if ((mask & 16) && (display & 0x1000) && (sPriorityMask & SLOT_OBJ(priority)))
         {
             uint64_t start = svcGetSystemTick();
             DrawObjects(priority, mask & 32);
@@ -3312,7 +3389,7 @@ static void VoxelBackgroundBlur(void)
 
 static void ComposeVoxelOverlay(void)
 {
-    sPriorityMask = 15;
+    sPriorityMask = SLOTS_ALL;
     sParallax = 0;
     sLayerOrigin = 0.0f;
     sLayerShift = 0.0f;
@@ -3376,22 +3453,79 @@ static void RenderVoxel(uint32_t clear)
  * The result is planes 0..count-2 holding one priority each and the last
  * holding the rest, so the planes never change what a frame looks like.
  */
+/* The depth slots this frame actually draws something in. */
+static unsigned UsedSlots(void)
+{
+    unsigned display = Reg(0), mode = display & 7, used = 0;
+
+    for (unsigned bg = 0; bg < 4; ++bg)
+    {
+        if (!(display & (0x100u << bg))) continue;
+        if ((mode == 1 && bg == 3) || (mode == 2 && bg < 2)) continue;
+        used |= SLOT_BG(Reg(8 + bg * 2) & 3);
+    }
+    if (display & 0x1000)
+        for (unsigned i = 0; i < 128; ++i)
+        {
+            unsigned attr0 = sMemory.oam[i * 4];
+
+            if (!(attr0 & 0x100) && (attr0 & 0x200)) continue;
+            if (((attr0 >> 10) & 3) >= 2) continue;
+            used |= SLOT_OBJ((sMemory.oam[i * 4 + 2] >> 10) & 3);
+        }
+    return used;
+}
+
+/*
+ * The slots of each plane, front to back: every slot in use its own plane,
+ * from the nearest, while planes last; the last plane takes all the rest, and
+ * everything from priority `merge` back (layers scrolled together) is one.
+ * So the depths go where the picture has something - the intro's bike scene
+ * is its sprites, its near layer and its far ones, not three priorities of
+ * which the first is empty.
+ */
+static unsigned sBandSlots[CTR_BANDS];
+
+static unsigned BandsFromSlots(unsigned used, unsigned merge)
+{
+    unsigned count = 0, cut = merge < 4 ? SLOT_OBJ(merge) : 256u, done = 0;
+    /*
+     * What is in front of layers scrolled together keeps a plane of its own
+     * even when planes are short: the field's text window shares priority 0
+     * with sprites, and with two planes the sprites took the near one and
+     * left the window flat on the map.
+     */
+    unsigned front = sBandCount - (cut < 256 && (used & ~(cut - 1)) ? 1 : 0);
+
+    if (!sBandCount) return 0;
+    for (unsigned bit = 1; bit < cut; bit <<= 1)
+    {
+        if (!(used & bit)) continue;
+        if (count + 1 < front) sBandSlots[count++] = bit;
+        else
+            /* The last plane before the cut: this slot and all up to it. */
+            sBandSlots[count++] = (cut - 1) & ~(bit - 1);
+        done = (bit << 1) - 1;
+        if (count == front) { done = cut - 1; break; }
+    }
+    /* The last plane: everything behind what has a plane already. */
+    if (count < sBandCount && (used & ~done)) sBandSlots[count++] = SLOTS_ALL & ~done;
+    else if (count) sBandSlots[count - 1] |= SLOTS_ALL & ~done;
+    if (count == 0) sBandSlots[count++] = SLOTS_ALL;
+    /* The first plane also takes the empty slots in front of it. */
+    sBandSlots[0] |= (sBandSlots[0] & -sBandSlots[0]) - 1;
+    return count;
+}
+
 static unsigned DepthPlanes(void)
 {
-    unsigned display = Reg(0), control = Reg(0x50);
-    unsigned target1 = control & 63, target2 = (control >> 8) & 63;
+    unsigned display = Reg(0);
     unsigned merge = 4;
 
-    if (((control >> 6) & 3) == 1 && target1 && target2 && ((Reg(0x52) >> 8) & 31))
-    {
-        if (target1 & 16) merge = 0;
-        for (unsigned bg = 0; bg < 4 && merge; ++bg)
-            if ((target1 & (1u << bg)) && (display & (0x100u << bg)))
-            {
-                unsigned priority = Reg(8 + bg * 2) & 3;
-                if (priority < merge) merge = priority;
-            }
-    }
+    /*
+     * Blending no longer merges planes: a plane with something that blends
+     * gets what lies behind it underneath, colour only (RenderBands).
+     */
     /*
      * Backgrounds scrolled together are one image cut into layers, like the
      * three metatile layers of the field, and giving them different depths
@@ -3413,18 +3547,49 @@ static unsigned DepthPlanes(void)
             if (otherPriority < priority) priority = otherPriority;
             if (priority < merge) merge = priority;
         }
+    /*
+     * The slots stay in use for the rest of the scene: a sprite that comes
+     * and goes - the logo's letters, a sparkle - would otherwise move every
+     * layer behind it from one plane to the next and back, the depth of the
+     * whole picture flickering with it. A scene is its display control and
+     * background priorities; when they change, so may the depths.
+     */
+    {
+        static unsigned sticky, stickyKey;
+        unsigned key = (display & 0x1f07) | (Reg(8) & 3) << 16 | (Reg(10) & 3) << 18
+                     | (Reg(12) & 3) << 20 | (Reg(14) & 3) << 22 | (unsigned)sStage << 24;
+
+        if (key != stickyKey) sticky = 0;
+        stickyKey = key;
+        sticky |= UsedSlots();
+        return BandsFromSlots(sticky, merge);
+    }
+}
+
+/*
+ * The depth slots holding something that blends with what lies beneath it:
+ * a first target of BLDCNT's alpha blend, or a semi-transparent sprite.
+ */
+static unsigned BlendingPriorities(void)
+{
+    unsigned display = Reg(0), control = Reg(0x50), found = 0;
+    unsigned target1 = control & 63, target2 = (control >> 8) & 63;
+    bool alpha = ((control >> 6) & 3) == 1 && target1 && target2 && ((Reg(0x52) >> 8) & 31);
+
+    if (alpha)
+        for (unsigned bg = 0; bg < 4; ++bg)
+            if ((target1 & (1u << bg)) && (display & (0x100u << bg)))
+                found |= SLOT_BG(Reg(8 + bg * 2) & 3);
     if (display & 0x1000)
-        for (unsigned i = 0; i < 128 && merge; ++i)
+        for (unsigned i = 0; i < 128; ++i)
         {
-            unsigned attr0 = sMemory.oam[i * 4];
-            unsigned priority;
+            unsigned attr0 = sMemory.oam[i * 4], mode = (attr0 >> 10) & 3;
 
             if (!(attr0 & 0x100) && (attr0 & 0x200)) continue;
-            if (((attr0 >> 10) & 3) != 1) continue;
-            priority = (sMemory.oam[i * 4 + 2] >> 10) & 3;
-            if (priority < merge) merge = priority;
+            if (mode == 1 || (mode == 0 && alpha && (target1 & 16)))
+                found |= SLOT_OBJ((sMemory.oam[i * 4 + 2] >> 10) & 3);
         }
-    return merge + 1 > sBandCount ? sBandCount : merge + 1;
+    return found;
 }
 
 /*
@@ -3569,8 +3734,8 @@ fail:
  */
 static unsigned BandMask(unsigned band, unsigned count)
 {
-    if (band + 1 < count) return 1u << band;
-    return 15u & ~((1u << band) - 1);
+    (void)count;
+    return sBandSlots[band];
 }
 
 static float BandDepth(unsigned band, unsigned count)
@@ -3595,19 +3760,112 @@ static void PlaneClear(C3D_RenderTarget *target, uint32_t color)
 }
 
 /* Composes every depth plane into its own surface, with no displacement. */
+/*
+ * Where in a plane of these slots something blends, in GBA coordinates: the
+ * box round its blending sprites, or false when a background blends, or the
+ * screen is one whose sprites this cannot place - then the whole view.
+ */
+static bool BlendBox(unsigned slots, int *x0, int *y0, int *x1, int *y1)
+{
+    static const uint8_t dimensions[3][4][2] = {
+        {{8,8},{16,16},{32,32},{64,64}},
+        {{16,8},{32,8},{32,16},{64,32}},
+        {{8,16},{8,32},{16,32},{32,64}}
+    };
+    unsigned display = Reg(0), control = Reg(0x50);
+    unsigned target1 = control & 63;
+    bool alpha = ((control >> 6) & 3) == 1;
+
+    if (!(sStage || sCentred) || (display & 0x6000)) return false;
+    for (unsigned bg = 0; bg < 4 && alpha; ++bg)
+        if ((target1 & (1u << bg)) && (display & (0x100u << bg)) && (slots & SLOT_BG(Reg(8 + bg * 2) & 3)))
+            return false;
+    *x0 = *y0 = 1 << 20;
+    *x1 = *y1 = -(1 << 20);
+    for (unsigned i = 0; i < 128; ++i)
+    {
+        unsigned attr0 = sMemory.oam[i * 4], attr1 = sMemory.oam[i * 4 + 1];
+        unsigned mode = (attr0 >> 10) & 3, shape = attr0 >> 14;
+        bool affine = (attr0 & 0x100) != 0, twice = affine && (attr0 & 0x200);
+        int x, y, w, h;
+
+        if ((!affine && (attr0 & 0x200)) || shape == 3) continue;
+        if (!(slots & SLOT_OBJ((sMemory.oam[i * 4 + 2] >> 10) & 3))) continue;
+        if (!(mode == 1 || (mode == 0 && alpha && (target1 & 16)))) continue;
+        w = dimensions[shape][attr1 >> 14][0] << twice;
+        h = dimensions[shape][attr1 >> 14][1] << twice;
+        x = (int)(attr1 & 511);
+        y = (int)(attr0 & 255);
+        if (x + w > 512) x -= 512;
+        if (y + h > 256) y -= 256;
+        if (x < *x0) *x0 = x;
+        if (y < *y0) *y0 = y;
+        if (x + w > *x1) *x1 = x + w;
+        if (y + h > *y1) *y1 = y + h;
+    }
+    return *x0 < *x1;
+}
+
+/*
+ * A plane whose layers blend needs what lies behind them to blend with, and
+ * the planes behind it are other surfaces. So that plane is first given the
+ * whole picture behind it - the backdrop and every further priority -
+ * written to its colour but not its alpha, which stays clear: where its own
+ * layers draw, they blend with the right colours and make the pixel opaque;
+ * everywhere else it stays transparent and the plane behind shows at its own
+ * depth. The logo over the intro's leaves, a sprite's shadow on the field,
+ * keep their depth instead of flattening the frame to one plane.
+ */
 static void RenderBands(unsigned count, uint32_t backdrop)
 {
+    unsigned blending = BlendingPriorities();
+
     sParallax = 0;
     for (int band = (int)count - 1; band >= 0; --band)
     {
-        uint32_t before = sStats.tiles;
+        unsigned mask = BandMask(band, count);
+        bool last = band + 1 == (int)count, behind = !last && (blending & mask);
+        uint32_t before;
 
-        sPriorityMask = BandMask(band, count);
         sLayerShift = 0;
         BlendForget();
-        PlaneClear(sBand[band], band + 1 == (int)count ? backdrop : 0);
+        PlaneClear(sBand[band], last ? backdrop : behind ? backdrop & 0x00ffffff : 0);
         C2D_SceneBegin(sBand[band]);
-        if (band + 1 == (int)count)
+        if (behind)
+        {
+            C2D_Flush();
+            C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_RED | GPU_WRITE_GREEN | GPU_WRITE_BLUE);
+            unsigned top = mask;
+
+            while (top & (top - 1)) top &= top - 1;
+            int x0, y0, x1, y1;
+
+            /* Every slot behind this plane's. */
+            sPriorityMask = SLOTS_ALL & ~((top << 1) - 1);
+            Blend(5, false, false);
+            StageUnderlay();
+            /* Only under what blends: the logo, not the whole scene again. */
+            if (BlendBox(mask, &x0, &y0, &x1, &y1))
+            {
+                if (x0 > sClipX0) sClipX0 = x0;
+                if (y0 > sClipY0) sClipY0 = y0;
+                if (x1 < sClipX1) sClipX1 = x1;
+                if (y1 < sClipY1) sClipY1 = y1;
+                C2D_Flush();
+                Scissor(sClipX0, sClipY0, sClipX1, sClipY1);
+                sScissored = true;
+            }
+            if (!(Reg(0) & 128) && sClipX0 < sClipX1 && sClipY0 < sClipY1) Compose();
+            ClipToView();
+            sScissored = false;
+            C2D_Flush();
+            C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+            C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+            BlendForget();
+        }
+        before = sStats.tiles;
+        sPriorityMask = mask;
+        if (last)
         {
             Blend(5, false, false);
             StageUnderlay();
@@ -3618,7 +3876,7 @@ static void RenderBands(unsigned count, uint32_t backdrop)
         /* The furthest plane carries the backdrop, so it is never empty. */
         sBandUsed[band] = sStats.tiles != before || band + 1 == (int)count;
     }
-    sPriorityMask = 15;
+    sPriorityMask = SLOTS_ALL;
     /* Rendering to a texture and then sampling it needs a command split. */
     C3D_FrameSplit(0);
 }
@@ -3837,7 +4095,8 @@ void CtrVideo_Present(void)
     if (sUsed > CACHE_COUNT - 4096) { memset(sHash, 0, sizeof(sHash)); sUsed = 0; }
     UpdatePalette();
     if (sStage || sBattle) RecordScroll();
-    uint16_t backdrop = (Reg(0) & 128) ? 0x7fff : sPalette[0];
+    /* The shown backdrop, faded: sPalette may hold the unfaded one. */
+    uint16_t backdrop = (Reg(0) & 128) ? 0x7fff : sMemory.palette[0] & 0x7fff;
     uint32_t rgb = CtrVideo_RGBA8(backdrop, true);
     uint32_t clear = C2D_Color32(rgb >> 24, rgb >> 16, rgb >> 8, 255);
     /*
