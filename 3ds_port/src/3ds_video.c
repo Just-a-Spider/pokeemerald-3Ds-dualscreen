@@ -855,14 +855,14 @@ static void MeasureStill(unsigned bg)
  */
 #define FADE_ACROSS 56.0f
 #define FADE_DOWN 28.0f
-/* The layer being drawn keeps its sky lit above it (StageLayerDrop). */
-static bool sLitAbove;
+static bool StageUnfaded(void);
 
 static float EdgeFade(int x, int y, int top, int bottom)
 {
     float across = x < 0 ? -x / FADE_ACROSS : x > 240 ? (x - 240) / FADE_ACROSS : 0.0f;
-    float down = y < top ? (sLitAbove ? 0.0f : (top - y) / FADE_DOWN)
-               : y > bottom ? (y - bottom) / FADE_DOWN : 0.0f;
+    float down = y < top ? (top - y) / FADE_DOWN : y > bottom ? (y - bottom) / FADE_DOWN : 0.0f;
+
+    if (StageUnfaded()) return 0.0f;
     float fade = across > down ? across : down;
 
     return fade > 1.0f ? 1.0f : fade;
@@ -880,9 +880,9 @@ static bool sUnderlaid;
  * Rayquaza on the title screen stands on the bottom edge of the screen, as it
  * does on the GBA's, rather than 40 lines above it: its layer is drawn that
  * much lower, so nothing has to be made up under its coils, and the room it
- * leaves above is its sky, carried up from its top row. That sky is not
- * faded: over 80 lines a fade would leave most of the screen black. Only the
- * sides fade, as they do beside any still picture.
+ * leaves above is its sky, carried up from its top row. Nothing on this
+ * screen fades: its margins are its edge tiles repeated at full light, and
+ * no black is laid under them.
  */
 #define TITLE_RAYQUAZA_DROP (CTR_GAME_HEIGHT - 160 - CTR_STAGE_Y)
 int CtrTitleScreen_RayquazaBg(void);
@@ -890,6 +890,11 @@ int CtrTitleScreen_RayquazaBg(void);
 static int StageLayerDrop(unsigned bg)
 {
     return sStage && CtrTitleScreen_RayquazaBg() == (int)bg ? TITLE_RAYQUAZA_DROP : 0;
+}
+
+static bool StageUnfaded(void)
+{
+    return sStage && CtrTitleScreen_RayquazaBg() >= 0;
 }
 
 static void StageUnderlay(void)
@@ -901,7 +906,7 @@ static void StageUnderlay(void)
     sUnderlaid = false;
     /* Under windows the margins may be the backdrop on purpose (the
      * letterbox, which flashes with it), so nothing is assumed there. */
-    if (!sStage || (display & 128) || (display & 0x6000)) return;
+    if (!sStage || StageUnfaded() || (display & 128) || (display & 0x6000)) return;
     for (unsigned bg = 0; bg < 4; ++bg)
         if ((display & (0x100u << bg)) && !sScrolls[bg] && mode != 2 && !(mode == 1 && bg == 2))
             still = true;
@@ -909,8 +914,7 @@ static void StageUnderlay(void)
     ViewBase();
     C2D_DrawRectSolid(0, 0, 0, CTR_VIEW_X - FADE_ACROSS, CTR_GAME_HEIGHT, black);
     C2D_DrawRectSolid(CTR_VIEW_X + 240 + FADE_ACROSS, 0, 0, CTR_VIEW_X - FADE_ACROSS, CTR_GAME_HEIGHT, black);
-    /* Above a dropped layer is its lit sky, not black. */
-    if (!StageLayerDrop(0)) C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_VIEW_Y - FADE_DOWN, black);
+    C2D_DrawRectSolid(0, 0, 0, CTR_GAME_WIDTH, CTR_VIEW_Y - FADE_DOWN, black);
     C2D_DrawRectSolid(0, CTR_VIEW_Y + 160 + FADE_DOWN, 0, CTR_GAME_WIDTH, CTR_VIEW_Y - FADE_DOWN, black);
     sUnderlaid = true;
 }
@@ -2659,7 +2663,6 @@ static void Layers(unsigned mask)
             bool lines = sNavBand && !(CentredLayers(&sCentredFills[sCentredScreen]) & (1u << bg));
 
             sViewY += drop;
-            sLitAbove = drop != 0;
             sClipY0 -= drop;
             sClipY1 -= drop;
             if (lines)
@@ -2693,7 +2696,6 @@ static void Layers(unsigned mask)
                 DrawTextBg(bg);
             sLayerShift = shift;
             sViewY = viewY;
-            sLitAbove = false;
             sClipY0 = clipY0;
             sClipY1 = clipY1;
             if (lines) NavScissor(sNavBand->screenTop, sNavBand->screenBottom);
