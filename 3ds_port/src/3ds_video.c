@@ -277,7 +277,7 @@ static bool sFieldLayers;
 #define CTR_BANDS 3
 static C3D_Tex sBandTex[CTR_BANDS];
 static C3D_RenderTarget *sBand[CTR_BANDS];
-static bool sBandsReady, sBandsFailed;
+static bool sBandsFailed;
 /* A failed allocation is tried again this many frames later, not never: the
  * VRAM it needs may have been in use by the overworld only for a while. */
 #define CTR_BANDS_RETRY_FRAMES 300u
@@ -1578,6 +1578,15 @@ static LayerTexture sLayers[4];
 /* Whether each background is drawn from its texture this frame. */
 static bool sLayerReady[4];
 static uint32_t sLayerFailFrame;
+/*
+ * A stage whose layer textures found no VRAM because the depth planes hold it.
+ * Its layers drawn tile by tile cost 30 ms a frame on an Old 3DS, composing it
+ * per eye from its textures a few, so the planes give way to them: released
+ * before the next frame and not asked for again until the stage is over.
+ */
+static bool sStageWithoutPlanes;
+static bool sBandsReady;
+void CtrVideo_RequestPlaneRelease(void);
 
 static unsigned LineValue(unsigned reg, int y, unsigned base)
 {
@@ -1665,10 +1674,17 @@ static void LayersPrepare(void)
             if (!C3D_TexInitVRAM(&layer->tex, width, height, GPU_RGBA5551)
                 || !(layer->target = C3D_RenderTargetCreateFromTex(&layer->tex, GPU_TEXFACE_2D, 0, -1)))
             {
+                LayerRelease(bg);
+                if (sStage && sBandsReady)
+                {
+                    /* Tile by tile for this one frame; the planes go. */
+                    sStageWithoutPlanes = true;
+                    CtrVideo_RequestPlaneRelease();
+                    continue;
+                }
                 if (!sLayerFailFrame)
                     CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no VRAM for a %ux%u layer texture (free=%lu); "
                                  "tile walk", width, height, (unsigned long)vramSpaceFree());
-                LayerRelease(bg);
                 sLayerFailFrame = sStats.frames | 1;
                 continue;
             }
@@ -3606,6 +3622,22 @@ static float BandDepth(unsigned band, unsigned count)
     return band + 1 < count ? (float)(CTR_PRIORITIES - 1 - band) : 0.0f;
 }
 
+/*
+ * C2D_TargetClear for a plane. The GPU fills a 16-bit surface with the low
+ * half of the value it is given, and C2D_TargetClear gives it the RGBA8 word,
+ * whose low half is blue and alpha: opaque black came out blue, and any
+ * backdrop some other colour. The colour is packed as RGBA5551 instead.
+ */
+static void PlaneClear(C3D_RenderTarget *target, uint32_t color)
+{
+    unsigned r = color & 255, g = (color >> 8) & 255, b = (color >> 16) & 255, a = color >> 24;
+
+    C2D_Flush();
+    C3D_FrameSplit(0);
+    C3D_RenderTargetClear(target, C3D_CLEAR_ALL,
+                          (r >> 3) << 11 | (g >> 3) << 6 | (b >> 3) << 1 | (a >= 128), 0);
+}
+
 /* Composes every depth plane into its own surface, with no displacement. */
 static void RenderBands(unsigned count, uint32_t backdrop)
 {
@@ -3617,7 +3649,7 @@ static void RenderBands(unsigned count, uint32_t backdrop)
         sPriorityMask = BandMask(band, count);
         sLayerShift = 0;
         BlendForget();
-        C2D_TargetClear(sBand[band], band + 1 == (int)count ? backdrop : 0);
+        PlaneClear(sBand[band], band + 1 == (int)count ? backdrop : 0);
         C2D_SceneBegin(sBand[band]);
         if (band + 1 == (int)count)
         {
@@ -3885,7 +3917,8 @@ void CtrVideo_Present(void)
      * enough to be composed per eye. A stage is not: the intro and the title
      * draw their waves line by line, and twice that is more than an Old 3DS
      * has in a frame, so they take the planes like any other 2D screen. */
-    bool planes = stereo && !overworld && !sBattle && BandsUsable();
+    if (!sStage) sStageWithoutPlanes = false;
+    bool planes = stereo && !overworld && !sBattle && !sStageWithoutPlanes && BandsUsable();
     if (stereo && !overworld && !sStage && !sBattle && !planes) stereo = false;
     if (bottom) stereo = planes = false;
     if (stereo != sStereo) { gfxSet3D(stereo); sStereo = stereo; }
