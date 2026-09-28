@@ -607,11 +607,63 @@ static void DrawTextSpan(unsigned bg, int left, int right, int top, int bottom)
  */
 static bool sScissored;
 
+/*
+ * The PokéNav on the bottom screen has 240 lines for the GBA's 160, and it
+ * spends them as a phone screen would: its header stays on the top edge, its
+ * footer (the help bar) goes down to the bottom edge, and the rest - its
+ * body - sits in the middle, the background at the back carried on in the
+ * space between them. The main menu is a header (the POKéMON NAVIGATOR bar)
+ * and a body; the screens under it slide that bar down as their help bar,
+ * and their header is the tab of sprites naming the screen at the top.
+ *
+ * Each band is composed as a frame of its own (NavCompose), moved down by
+ * its shift, scissored to the part of the screen it owns: the backgrounds
+ * only for its lines of the picture, the backmost one (CentredLayers) over
+ * all of that part, and the sprites that belong to it (NavObjectBand) whole.
+ */
+typedef struct
+{
+    /* The picture's lines [top, bottom), shown shift lines lower, and the
+     * part of the bottom screen [screenTop, screenBottom) the band owns. */
+    int top, bottom, shift, screenTop, screenBottom;
+} NavBand;
+
+#define NAV_BAR_LINES 32
+#define NAV_HELP_TOP 144
+#define NAV_BODY_SHIFT ((240 - 160) / 2)
+
+static const NavBand sNavMain[] =
+{
+    {0, NAV_BAR_LINES, 0, 0, NAV_BAR_LINES + NAV_BODY_SHIFT},
+    {NAV_BAR_LINES, 160, NAV_BODY_SHIFT, NAV_BAR_LINES + NAV_BODY_SHIFT, 240},
+};
+static const NavBand sNavSubmenu[] =
+{
+    {0, 0, 0, 0, NAV_BODY_SHIFT},
+    {0, NAV_HELP_TOP, NAV_BODY_SHIFT, NAV_BODY_SHIFT, 240 - (160 - NAV_HELP_TOP)},
+    {NAV_HELP_TOP, 160, 240 - 160, 240 - (160 - NAV_HELP_TOP), 240},
+};
+/* The bands of the last PokéNav frame, and the one being composed. */
+static const NavBand *sNavBands = sNavMain;
+static unsigned sNavBandCount = 2;
+static const NavBand *sNavBand;
+/* The sprite tiles of the header tab, [first, end): pokenav_main_menu.c. */
+static unsigned sNavHeaderTiles[2];
+/* The scissor's lines while a band is composed, on screen. */
+static int sNavClip0, sNavClip1;
+unsigned char CtrPokenav_HeaderTiles(unsigned short *first, unsigned short *end);
+
 static void Scissor(int x0, int y0, int x1, int y1)
 {
     float sx0 = (x0 + CTR_VIEW_X) * sZoom + sOffX, sx1 = (x1 + CTR_VIEW_X) * sZoom + sOffX;
     float sy0 = (y0 + CTR_VIEW_Y) * sZoom + sOffY, sy1 = (y1 + CTR_VIEW_Y) * sZoom + sOffY;
 
+    if (sNavBand)
+    {
+        if (sy0 < sNavClip0) sy0 = (float)sNavClip0;
+        if (sy1 > sNavClip1) sy1 = (float)sNavClip1;
+        if (sy1 < sy0) sy1 = sy0;
+    }
     if (sx0 < 0) sx0 = 0;
     if (sy0 < 0) sy0 = 0;
     C3D_SetScissor(GPU_SCISSOR_NORMAL, (unsigned)roundf(sx0), (unsigned)(sSurfaceH - roundf(sy1)),
@@ -1281,9 +1333,10 @@ static unsigned CentredLayers(const CentredFill *fill)
     unsigned display = Reg(0), best = 4, priority = 0;
 
     if (!fill->backmost) return fill->layers;
-    if ((display & 7) != 0) return 0;
+    if ((display & 7) > 2) return 0;
     for (unsigned bg = 0; bg < 4; ++bg)
-        if ((display & (0x100u << bg)) && (Reg(8 + bg * 2) & 3) >= priority)
+        if ((display & (0x100u << bg)) && (Reg(8 + bg * 2) & 3) >= priority
+         && !((display & 7) == 1 && bg == 3) && !((display & 7) == 2 && bg < 2))
         {
             priority = Reg(8 + bg * 2) & 3;
             best = bg;
@@ -1347,6 +1400,38 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
     }
 }
 
+/*
+ * The backmost layer in a band of the PokéNav: the band's lines of the
+ * picture, and over the rest of the band's part of the screen the picture's
+ * bottom row, the one the GBA screen ends on below its help bar - the dots,
+ * the sea, the wood. With texture it is cut from the layer's texture.
+ */
+static void DrawLayerRect(unsigned bg, int x0, int x1, int y0, int y1,
+                          float sx, float sy, float dx, float dy, bool fade, int top, int bottom);
+
+static void DrawNavBackmost(unsigned bg, bool texture)
+{
+    const NavBand *band = sNavBand;
+
+    if (band->top < band->bottom)
+    {
+        if (texture) DrawLayerRect(bg, 0, 240, band->top, band->bottom, 0, (float)band->top, 1, 1, false, 0, 0);
+        else DrawCentredSpan(bg, 0, 240, band->top, band->bottom);
+    }
+    for (int y = band->screenTop - band->shift; y < band->screenBottom - band->shift; y += 8)
+    {
+        if (y + 8 > band->top && y < band->bottom) continue;
+        if (texture)
+            DrawLayerRect(bg, 0, 240, y, y + 8, 0, 152, 1, 1, false, 0, 0);
+        else
+        {
+            sSpanShiftY = y - 152;
+            DrawCentredSpan(bg, 0, 240, 152, 160);
+            sSpanShiftY = 0;
+        }
+    }
+}
+
 /* True when the centred screen draws this layer itself. */
 static bool DrawCentredBg(unsigned bg)
 {
@@ -1354,6 +1439,11 @@ static bool DrawCentredBg(unsigned bg)
 
     bool speech = fill->bandRow && ((Reg(8) >> 2) & 3) == fill->bandChars;
 
+    if (sNavBand && (CentredLayers(fill) & (1u << bg)))
+    {
+        DrawNavBackmost(bg, false);
+        return true;
+    }
     if (CentredLayers(fill) & (1u << bg))
     {
         int sky = speech ? fill->skyRows : 0;
@@ -2369,6 +2459,17 @@ static void DrawAffineBg(unsigned bg)
     ViewBase();
 }
 
+/* The PokéNav band a sprite belongs to: its top line's, or the header's for
+ * the tab naming a screen under the main menu. */
+static const NavBand *NavObjectBand(unsigned tile, int y)
+{
+    if (sNavBands == sNavSubmenu && tile >= sNavHeaderTiles[0] && tile < sNavHeaderTiles[1])
+        return &sNavBands[0];
+    for (unsigned b = sNavBandCount; b-- > 1;)
+        if (y >= sNavBands[b].top && sNavBands[b].top < sNavBands[b].bottom) return &sNavBands[b];
+    return sNavBands == sNavSubmenu ? &sNavBands[1] : &sNavBands[0];
+}
+
 static void DrawObjects(unsigned priority, bool effects)
 {
     static const uint8_t dimensions[3][4][2] = {
@@ -2418,11 +2519,12 @@ static void DrawObjects(unsigned priority, bool effects)
             }
 #endif
         }
-        if (x >= sClipX1 || x + (int)boxW <= sClipX0
-         || y >= sClipY1 || y + (int)boxH <= sClipY0) continue;
         /* Below the PokeNav's picture is its background, not the space the
          * GBA parks its unused sprites in. */
         if (sCentredScreen == CTR_CENTRED_POKENAV && y >= 160) continue;
+        if (sNavBand && NavObjectBand(attr2 & 1023, y) != sNavBand) continue;
+        if (x >= sClipX1 || x + (int)boxW <= sClipX0
+         || y >= sClipY1 || y + (int)boxH <= sClipY0) continue;
         ++sStats.sprites;
         Blend(4, effects, mode == 1);
         ViewBase();
@@ -2456,6 +2558,49 @@ static void DrawObjects(unsigned priority, bool effects)
     ViewBase();
 }
 
+/*
+ * An affine backmost layer in a band of the PokéNav (the Hoenn map, its sea
+ * and all): as DrawNavBackmost does, the band's lines, then the picture's
+ * bottom row repeated over the rest, each row moved into place by the view.
+ */
+static void NavScissor(int top, int bottom);
+
+static void DrawNavBackmostAffine(unsigned bg)
+{
+    const NavBand *band = sNavBand;
+    int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY;
+
+    if (band->top < band->bottom)
+    {
+        if (sClipY0 < band->top) sClipY0 = band->top;
+        if (sClipY1 > band->bottom) sClipY1 = band->bottom;
+        NavScissor(band->top + band->shift, band->bottom + band->shift);
+        if (sClipY0 < sClipY1) DrawAffineBg(bg);
+    }
+    for (int y = band->screenTop - band->shift; y < band->screenBottom - band->shift; y += 8)
+    {
+        if (y + 8 > band->top && y < band->bottom) continue;
+        sViewY = viewY + y - 152;
+        sClipY0 = clipY0 > y ? clipY0 - (y - 152) : 152;
+        sClipY1 = clipY1 < y + 8 ? clipY1 - (y - 152) : 160;
+        NavScissor(y + band->shift, y + band->shift + 8);
+        if (sClipY0 < sClipY1) DrawAffineBg(bg);
+    }
+    sViewY = viewY;
+    sClipY0 = clipY0;
+    sClipY1 = clipY1;
+    NavScissor(band->screenTop, band->screenBottom);
+}
+
+/* Narrows the scissor of a PokéNav band to lines [top, bottom) of the screen. */
+static void NavScissor(int top, int bottom)
+{
+    C2D_Flush();
+    sNavClip0 = top > sNavBand->screenTop ? top : sNavBand->screenTop;
+    sNavClip1 = bottom < sNavBand->screenBottom ? bottom : sNavBand->screenBottom;
+    RestoreScissor();
+}
+
 static void Layers(unsigned mask)
 {
     unsigned display = Reg(0), mode = display & 7;
@@ -2472,17 +2617,38 @@ static void Layers(unsigned mask)
             if (!(mask & (1u << bg)) || !(display & (0x100u << bg)) || (Reg(8 + bg * 2) & 3) != (unsigned)priority) continue;
             if ((mode == 1 && bg == 3) || (mode == 2 && bg < 2)) continue;
             if (Reg(8 + bg * 2) & 0x40) Error(11, "BG mosaic not supported");
+            int clipY0 = sClipY0, clipY1 = sClipY1;
+            bool lines = sNavBand && !(CentredLayers(&sCentredFills[sCentredScreen]) & (1u << bg));
+            if (lines)
+            {
+                if (sClipY0 < sNavBand->top) sClipY0 = sNavBand->top;
+                if (sClipY1 > sNavBand->bottom) sClipY1 = sNavBand->bottom;
+                if (sClipY0 >= sClipY1)
+                {
+                    sClipY0 = clipY0;
+                    sClipY1 = clipY1;
+                    continue;
+                }
+                NavScissor(sNavBand->top + sNavBand->shift, sNavBand->bottom + sNavBand->shift);
+            }
             Blend(bg, mask & 32, false);
             /* Which stage a slow frame is in: the layer walk, the sprites or
              * the GPU. Guessing that from fps alone costs a hardware run. */
             uint64_t start = svcGetSystemTick();
             float shift = sLayerShift;
             if (sFieldUi && bg == 0) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
-            if ((mode == 1 && bg == 2) || mode == 2) DrawAffineBg(bg);
+            if (((mode == 1 && bg == 2) || mode == 2) && sNavBand && !lines) DrawNavBackmostAffine(bg);
+            else if ((mode == 1 && bg == 2) || mode == 2) DrawAffineBg(bg);
             else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
             else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
                 DrawTextBg(bg);
             sLayerShift = shift;
+            if (lines)
+            {
+                sClipY0 = clipY0;
+                sClipY1 = clipY1;
+                NavScissor(sNavBand->screenTop, sNavBand->screenBottom);
+            }
             sBgTicks += svcGetSystemTick() - start;
         }
         if ((mask & 16) && (display & 0x1000))
@@ -2604,8 +2770,11 @@ static bool DrawBandBgTex(unsigned bg)
 
     if (!sLineBand.on || !LayerDrawable(bg)) return false;
     ViewBase();
-    DrawLayerRect(bg, 0, 240, 0, 160, 0, 0, 1, 1, false, 0, 0);
-    if (CentredLayers(fill) & (1u << bg)) DrawCentredMargins(bg, fill, -64, 64);
+    if (sNavBand && (CentredLayers(fill) & (1u << bg)))
+        DrawNavBackmost(bg, true);
+    else
+        DrawLayerRect(bg, 0, 240, 0, 160, 0, 0, 1, 1, false, 0, 0);
+    if (!sNavBand && (CentredLayers(fill) & (1u << bg))) DrawCentredMargins(bg, fill, -64, 64);
     return true;
 }
 
@@ -2705,23 +2874,27 @@ static void ComposeBand(int top, int bottom)
 static void Compose(void)
 {
     unsigned display = Reg(0);
+    /* A band of the PokéNav composes only its part of the screen. */
+    int top = sNavBand ? sClipY0 : VIEW_TOP, bottom = sNavBand ? sClipY1 : VIEW_BOTTOM;
+    int first = top > 0 ? top : 0, end = bottom < 160 ? bottom : 160;
+
     if (display & 0x8000) Error(7, "OBJ windows not supported");
     if (!(display & 0x6000)) { Layers(63); return; }
     if (!LineWindows())
-        ComposeBand(VIEW_TOP, VIEW_BOTTOM);
+        ComposeBand(top, bottom);
     else
     {
         /* Above and below the picture no line opens a window. */
         sLineBand.on = true;
         sLineBand.across[0] = sLineBand.across[1] = 0;
-        sLineBand.top = VIEW_TOP;
-        sLineBand.bottom = 0;
-        if (VIEW_TOP < 0) ComposeBand(VIEW_TOP, 0);
-        for (int y = 0, next; y < 160; y = next)
+        sLineBand.top = top;
+        sLineBand.bottom = bottom < 0 ? bottom : 0;
+        if (top < 0) ComposeBand(top, sLineBand.bottom);
+        for (int y = first, next; y < end; y = next)
         {
             sLineBand.across[0] = sLineWindows.across[0][y];
             sLineBand.across[1] = sLineWindows.across[1][y];
-            for (next = y + 1; next < 160; ++next)
+            for (next = y + 1; next < end; ++next)
                 if (sLineWindows.across[0][next] != sLineBand.across[0]
                  || sLineWindows.across[1][next] != sLineBand.across[1]) break;
             sLineBand.top = y;
@@ -2729,9 +2902,9 @@ static void Compose(void)
             ComposeBand(y, next);
         }
         sLineBand.across[0] = sLineBand.across[1] = 0;
-        sLineBand.top = 160;
-        sLineBand.bottom = VIEW_BOTTOM;
-        if (VIEW_BOTTOM > 160) ComposeBand(160, VIEW_BOTTOM);
+        sLineBand.top = top > 160 ? top : 160;
+        sLineBand.bottom = bottom;
+        if (bottom > 160) ComposeBand(sLineBand.top, bottom);
         sLineBand.on = false;
     }
     C2D_Flush();
@@ -3006,6 +3179,58 @@ static void BottomTransfer(void)
                             | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
 }
 
+/* The PokéNav's frame on the bottom screen, band by band (sNavMain). */
+static void NavCompose(void)
+{
+    unsigned short first, end;
+    int viewY = sViewY;
+
+    /* The bar is on top in the main menu; slid down past half, a help bar. */
+    sNavBands = (Reg(0x12) & 511) >= 16 ? sNavSubmenu : sNavMain;
+    sNavBandCount = sNavBands == sNavSubmenu ? 3 : 2;
+    sNavHeaderTiles[0] = sNavHeaderTiles[1] = 0;
+    if (CtrPokenav_HeaderTiles(&first, &end))
+    {
+        sNavHeaderTiles[0] = first;
+        sNavHeaderTiles[1] = end;
+    }
+    for (unsigned b = 0; b < sNavBandCount; ++b)
+    {
+        sNavBand = &sNavBands[b];
+        sViewY = sNavBand->shift;
+        ClipToView();
+        sClipY0 = sNavBand->screenTop - sViewY;
+        sClipY1 = sNavBand->screenBottom - sViewY;
+        sNavClip0 = sNavBand->screenTop;
+        sNavClip1 = sNavBand->screenBottom;
+        C2D_Flush();
+        sScissored = true;
+        RestoreScissor();
+        Compose();
+        C2D_Flush();
+        C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+        sScissored = false;
+    }
+    sNavBand = NULL;
+    sViewY = viewY;
+    ClipToView();
+}
+
+int CtrVideo_BottomPictureY(int y)
+{
+    for (unsigned b = 0; b < sNavBandCount; ++b)
+    {
+        const NavBand *band = &sNavBands[b];
+        int line = y - band->shift;
+
+        if (y < band->screenTop || y >= band->screenBottom) continue;
+        /* The header tab lies where it does on the GBA. */
+        if (band->top == band->bottom || (line >= band->top && line < band->bottom)) return line;
+        return -1;
+    }
+    return -1;
+}
+
 static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
 {
     const Tex3DS_SubTexture logical = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
@@ -3022,7 +3247,11 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
     StageUnderlay();
     /* After a scene composed on its own, only the text box is left. */
     if (scene) sLayerExclude = 63 & ~(1u | 32u);
-    if (!(Reg(0) & 128)) Compose();
+    if (!(Reg(0) & 128))
+    {
+        if (target == sBottom) NavCompose();
+        else Compose();
+    }
     sLayerExclude = 0;
     C2D_Flush();
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
@@ -3490,8 +3719,8 @@ void CtrVideo_Present(void)
     if (sStage || sCentred)
     {
         sViewX = CTR_STAGE_X;
-        /* The PokeNav starts at the top of the bottom screen, its background
-         * carried on below it. */
+        /* The PokeNav is on the bottom screen, laid out band by band from
+         * its top edge (NavCompose). */
         sViewY = sCentredScreen == CTR_CENTRED_POKENAV ? 0 : CTR_STAGE_Y;
     }
     else if (sBattle)

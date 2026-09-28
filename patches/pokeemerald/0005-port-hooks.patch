@@ -8087,7 +8087,7 @@ index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..155803d7266f846c8d141d46f5f6f10c
 +}
 +#endif
 diff --git a/src/pokenav_main_menu.c b/src/pokenav_main_menu.c
-index 761f572d6bdac651fd2f0cdbe087846e230b9166..0bb20f85ed9c9a4f04d04f4ca7d0997dd1e84dc2 100644
+index 761f572d6bdac651fd2f0cdbe087846e230b9166..46d488f171aa93462c7f8d95f036c628b3c1aa39 100644
 --- a/src/pokenav_main_menu.c
 +++ b/src/pokenav_main_menu.c
 @@ -1,5 +1,8 @@
@@ -8146,6 +8146,28 @@ index 761f572d6bdac651fd2f0cdbe087846e230b9166..0bb20f85ed9c9a4f04d04f4ca7d0997d
      LZ77UnCompWram(sPokenavSubMenuLeftHeaderSpriteSheets[menuGfxId].data, &gDecompressionBuffer[0x1000]);
      RequestDma3Copy(&gDecompressionBuffer[0x1000], (void *)OBJ_VRAM0 + 0x800 + (GetSpriteTileStartByTag(2) * 32), size, 1);
  }
+@@ -847,3 +865,21 @@ static void SpriteCB_MoveLeftHeader(struct Sprite *sprite)
+         sprite->callback = SpriteCallbackDummy;
+     }
+ }
++
++#ifdef PLATFORM_3DS
++bool8 CtrPokenav_IsOpen(void);
++
++// The sprite tiles of the tabs naming the screen on show (the left headers,
++// both sizes), [*first, *end): the 3DS bottom screen keeps them on its top
++// edge while it moves the rest of the screen down. FALSE while not loaded.
++bool8 CtrPokenav_HeaderTiles(u16 *first, u16 *end)
++{
++    u16 start = GetSpriteTileStartByTag(2);
++
++    if (!CtrPokenav_IsOpen() || start == 0xFFFF)
++        return FALSE;
++    *first = start;
++    *end = start + sMenuLeftHeaderSpriteSheet.size / TILE_SIZE_4BPP;
++    return TRUE;
++}
++#endif
 diff --git a/src/pokenav_match_call_data.c b/src/pokenav_match_call_data.c
 index 3f47550f1710d4777ab4819dc0966610c71b9889..1c3cf9aeeb02309ca6231d66bd49a4cc7f4913b5 100644
 --- a/src/pokenav_match_call_data.c

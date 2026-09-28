@@ -87,8 +87,9 @@ a Pokémon, field moves) run the original menu hidden while the top screen
 holds its last frame, driven by injected key presses; what that menu shows is
 read back and drawn as buttons. The PokéNav is the game's own, run as it is:
 its screens are composed as a centred GBA screen and drawn into the 240x240
-area left of the column instead of the top screen, and a tap on them becomes
-the buttons they read. In battle the column gives way to the action and move
+area left of the column instead of the top screen, laid out for its 240 lines
+(the header on the top edge, the help bar on the bottom edge, the rest in the
+middle), and a tap on them becomes the buttons they read. In battle the column gives way to the action and move
 menus.
 
 ## Voxel overworld

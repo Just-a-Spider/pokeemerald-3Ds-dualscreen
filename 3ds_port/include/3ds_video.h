@@ -82,8 +82,9 @@ enum
     CTR_CENTRED_CLOCK,
     /*
      * The PokéNav, composed as the others but shown on the bottom screen: its
-     * 240x240 area left of the button column, the picture in the middle of
-     * it. The top screen keeps the frame it last showed meanwhile.
+     * 240x240 area left of the button column, its header on the top edge,
+     * its help bar on the bottom one and the rest in the middle (NavBand).
+     * The top screen keeps the frame it last showed meanwhile.
      */
     CTR_CENTRED_POKENAV,
     CTR_CENTRED_SCREENS
@@ -98,6 +99,12 @@ void CtrVideo_SetCentred(unsigned screen);
 void CtrVideo_SetLineWindow(const uint16_t *values, unsigned lines, bool both);
 /* Whether the last frame drew the PokéNav into the bottom screen's left area. */
 bool CtrVideo_BottomInUse(void);
+/*
+ * The PokéNav's line of the picture a tap on line y of the bottom screen
+ * lands on: its header stays on the top edge, its help bar on the bottom
+ * edge and its body in between (3ds_video.c, NavBand). -1 between them.
+ */
+int CtrVideo_BottomPictureY(int y);
 /*
  * Whether the frames that follow are the battle scene: the 240x160 picture 1:1
  * at (CTR_BATTLE_X, CTR_BATTLE_Y), so that its text box lies on the bottom

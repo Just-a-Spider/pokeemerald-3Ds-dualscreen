@@ -3486,7 +3486,7 @@ static void NavTap(int x, int y)
     s16 cx, cy;
     struct PokenavMonList *mons;
 
-    if (y >= 160)
+    if (y < 0 || y >= 160)
         return;
     switch (screen)
     {
@@ -4026,7 +4026,7 @@ static u8 ProcessTouch(u8 mode)
         if (mode == MODE_POKENAV && sTouch.startX < CW)
         {
             if (!sTouch.dragged)
-                NavTap(sTouch.lastX, sTouch.lastY);
+                NavTap(sTouch.lastX, CtrVideo_BottomPictureY(sTouch.lastY));
             else if (sTouch.lastY - sTouch.startY > 24 || sTouch.lastY - sTouch.startY < -24)
                 NavSwipe(sTouch.lastY - sTouch.startY);
             return HIT_NONE;
