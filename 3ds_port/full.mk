@@ -130,6 +130,14 @@ $(CTR_GBA_CENTRED_OBJS): compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
 build/root/src/main_menu.o: FULLCFLAGS += -DCTR_CENTRED_MAIN_MENU
 build/root/src/naming_screen.o: FULLCFLAGS += -DCTR_CENTRED_NAMING
 build/root/src/wallclock.o: FULLCFLAGS += -DCTR_CENTRED_CLOCK
+# The PokéNav: every screen of it laid out for the GBA screen, shown whole on
+# the bottom screen. pokenav.c installs all of its VBlank callbacks.
+CTR_GBA_POKENAV_SRCS := $(patsubst $(ROOT)/src/%.c,%,$(wildcard $(ROOT)/src/pokenav*.c))
+CTR_GBA_POKENAV_OBJS := $(patsubst %,build/root/src/%.o,$(CTR_GBA_POKENAV_SRCS))
+$(CTR_GBA_POKENAV_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE
+$(CTR_GBA_POKENAV_OBJS): $(ROOT)/include/gba/defines.h
+build/root/src/pokenav.o: FULLCFLAGS += -DCTR_CENTRED_POKENAV -include $(abspath compat/ctr_gba_centred.h)
+build/root/src/pokenav.o: compat/ctr_gba_centred.h
 # The battle scene: one 240x160 composition whose sprites, windows, scanline
 # tables and BG pages are all laid out for the GBA screen, shown 1:1 and filled
 # out to the whole top screen by the compositor (compat/ctr_gba_battle.h).

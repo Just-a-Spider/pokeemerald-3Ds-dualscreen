@@ -1257,6 +1257,8 @@ typedef struct
     int8_t inset[4];
     /* Only beside the picture, nothing above or below it. */
     bool across;
+    /* Instead of layers: the visible background drawn behind the others. */
+    bool backmost;
     uint8_t skyRows, bandRow, bandChars;
     int8_t bandX, bandY;
 } CentredFill;
@@ -1268,7 +1270,26 @@ static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
     /* Inside the yellow border; the title bar is its top row. */
     [CTR_CENTRED_NAMING] = {.layers = 1u << 3, .inset = {2, 0, 2, 1}},
     [CTR_CENTRED_CLOCK] = {.layers = 1u << 3},
+    /* Whatever background is at the back of the PokéNav screen on show
+     * (CentredLayers): the dots, the Hoenn sea, the ribbons' wood. */
+    [CTR_CENTRED_POKENAV] = {.backmost = true},
 };
+
+/* The backgrounds a centred screen carries out to its edges. */
+static unsigned CentredLayers(const CentredFill *fill)
+{
+    unsigned display = Reg(0), best = 4, priority = 0;
+
+    if (!fill->backmost) return fill->layers;
+    if ((display & 7) != 0) return 0;
+    for (unsigned bg = 0; bg < 4; ++bg)
+        if ((display & (0x100u << bg)) && (Reg(8 + bg * 2) & 3) >= priority)
+        {
+            priority = Reg(8 + bg * 2) & 3;
+            best = bg;
+        }
+    return best < 4 ? 1u << best : 0;
+}
 
 static void DrawCentredSpan(unsigned bg, int left, int right, int top, int bottom)
 {
@@ -1333,7 +1354,7 @@ static bool DrawCentredBg(unsigned bg)
 
     bool speech = fill->bandRow && ((Reg(8) >> 2) & 3) == fill->bandChars;
 
-    if (fill->layers & (1u << bg))
+    if (CentredLayers(fill) & (1u << bg))
     {
         int sky = speech ? fill->skyRows : 0;
 
@@ -1493,9 +1514,11 @@ static void LayersRelease(void)
  * as its tilemap. One that cannot be placed falls back to the tile walk and
  * is retried after a while, logged once.
  */
+static bool LineWindows(void);
+
 static void LayersPrepare(void)
 {
-    unsigned want = LineBackgrounds() | (sStage || sFieldLayers ? TextBackgrounds() : 0);
+    unsigned want = LineBackgrounds() | (sStage || sFieldLayers || LineWindows() ? TextBackgrounds() : 0);
 
     for (unsigned bg = 0; bg < 4; ++bg)
     {
@@ -1768,6 +1791,8 @@ static bool LayerDrawable(unsigned bg)
 {
     return sLayerReady[bg] && sLayers[bg].valid;
 }
+
+static bool DrawBandBgTex(unsigned bg);
 
 /*
  * One rectangle [x0, x1) x [y0, y1) of the screen, in GBA coordinates, cut
@@ -2395,6 +2420,9 @@ static void DrawObjects(unsigned priority, bool effects)
         }
         if (x >= sClipX1 || x + (int)boxW <= sClipX0
          || y >= sClipY1 || y + (int)boxH <= sClipY0) continue;
+        /* Below the PokeNav's picture is its background, not the space the
+         * GBA parks its unused sprites in. */
+        if (sCentredScreen == CTR_CENTRED_POKENAV && y >= 160) continue;
         ++sStats.sprites;
         Blend(4, effects, mode == 1);
         ViewBase();
@@ -2452,7 +2480,8 @@ static void Layers(unsigned mask)
             if (sFieldUi && bg == 0) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
             if ((mode == 1 && bg == 2) || mode == 2) DrawAffineBg(bg);
             else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
-            else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg)) DrawTextBg(bg);
+            else if (!DrawLineBg(bg) && !DrawFieldBgTex(bg) && !DrawStageBgTex(bg) && !DrawBandBgTex(bg))
+                DrawTextBg(bg);
             sLayerShift = shift;
             sBgTicks += svcGetSystemTick() - start;
         }
@@ -2541,34 +2570,103 @@ static void WindowSpan(unsigned limits, bool vertical, int *first, int *last)
     if (*last >= (int)extent) *last = VIEW_RIGHT;
 }
 
-static bool Inside(int p, unsigned limits, bool vertical)
+/*
+ * The window edges an HBlank DMA writes line by line (CtrVideo_SetLineWindow):
+ * WIN0H, or WIN0H and WIN1H, for each of the picture's 160 lines. The PokéNav
+ * lights its chosen option with one, and its condition graph is a polygon
+ * drawn as two of them. Only the PokéNav's screens use them here (LineWindows):
+ * the frame is composed in bands of lines whose windows are the same, each
+ * band partitioned as a frame with fixed windows is.
+ */
+static struct
 {
-    int first, last;
+    unsigned windows;
+    uint16_t across[2][160];
+} sLineWindows;
 
-    WindowSpan(limits, vertical, &first, &last);
-    /* Same reading of an empty window as the partition uses. */
-    return first < last && p >= first && p < last;
+/* The band being composed: its lines, and the line-driven windows' edges there. */
+static struct
+{
+    bool on;
+    int top, bottom;
+    uint16_t across[2];
+} sLineBand;
+
+/*
+ * A text background in a band of line windows (Compose): the picture's part
+ * of the cell from the layer texture, and the margins as a centred screen
+ * fills them. A band is a line or two tall, so walking its tiles would cost
+ * far more than the quad.
+ */
+static bool DrawBandBgTex(unsigned bg)
+{
+    const CentredFill *fill = &sCentredFills[sCentredScreen];
+
+    if (!sLineBand.on || !LayerDrawable(bg)) return false;
+    ViewBase();
+    DrawLayerRect(bg, 0, 240, 0, 160, 0, 0, 1, 1, false, 0, 0);
+    if (CentredLayers(fill) & (1u << bg)) DrawCentredMargins(bg, fill, -64, 64);
+    return true;
 }
 
-static void Compose(void)
+void CtrVideo_SetLineWindow(const uint16_t *values, unsigned lines, bool both)
+{
+    sLineWindows.windows = values ? (both ? 3u : 1u) : 0u;
+    if (!values) return;
+    for (unsigned y = 0; y < 160; ++y)
+    {
+        sLineWindows.across[0][y] = y < lines ? values[both ? y * 2 : y] : 0;
+        sLineWindows.across[1][y] = y < lines && both ? values[y * 2 + 1] : 0;
+    }
+}
+
+static bool LineWindows(void)
+{
+    return sLineWindows.windows && sCentredScreen == CTR_CENTRED_POKENAV && (Reg(0) & 0x6000);
+}
+
+/* Window w's rectangle in this band, empty when x0 >= x1 or y0 >= y1. */
+static void WindowRect(unsigned w, int *x0, int *x1, int *y0, int *y1)
+{
+    unsigned across = Reg(0x40 + 2 * w);
+
+    if (sLineBand.on && (sLineWindows.windows & (1u << w))) across = sLineBand.across[w];
+    WindowSpan(across, false, x0, x1);
+    WindowSpan(Reg(0x44 + 2 * w), true, y0, y1);
+    if (sLineBand.on)
+    {
+        if (*y0 < sLineBand.top) *y0 = sLineBand.top;
+        if (*y1 > sLineBand.bottom) *y1 = sLineBand.bottom;
+    }
+}
+
+static bool Inside(int px, int py, unsigned w)
+{
+    int x0, x1, y0, y1;
+
+    WindowRect(w, &x0, &x1, &y0, &y1);
+    /* Same reading of an empty window as the partition uses. */
+    return x0 < x1 && y0 < y1 && px >= x0 && px < x1 && py >= y0 && py < y1;
+}
+
+static void ComposeBand(int top, int bottom)
 {
     unsigned display = Reg(0);
-    if (display & 0x8000) Error(7, "OBJ windows not supported");
-    if (!(display & 0x6000)) { Layers(63); return; }
     /* Partition by window edges; each nonoverlapping rectangle has a uniform
      * WIN0 > WIN1 > outside mask. GPU scissor clips transformed primitives. */
     /* Window rectangles are GBA coordinates; the partition covers the whole
      * viewport so the margins keep the "outside" mask. */
     int xs[6] = {VIEW_LEFT, VIEW_RIGHT};
-    int ys[6] = {VIEW_TOP, VIEW_BOTTOM};
+    int ys[6] = {top, bottom};
     unsigned nx = 2, ny = 2;
     for (unsigned w = 0; w < 2; ++w)
         if (display & (0x2000u << w))
         {
             int x0, x1, y0, y1;
 
-            WindowSpan(Reg(0x40 + 2*w), false, &x0, &x1);
-            WindowSpan(Reg(0x44 + 2*w), true, &y0, &y1);
+            WindowRect(w, &x0, &x1, &y0, &y1);
+            if (y0 < top) y0 = top;
+            if (y1 > bottom) y1 = bottom;
 
             /*
              * A window left enabled with both edges past the screen is how the
@@ -2593,9 +2691,7 @@ static void Compose(void)
         if (xs[x] == xs[x+1] || ys[y] == ys[y+1]) continue;
         unsigned mask = Reg(0x4a) & 63;
         for (int w = 1; w >= 0; --w)
-            if ((display & (0x2000u << w))
-             && Inside(xs[x], Reg(0x40+2*w), false)
-             && Inside(ys[y], Reg(0x44+2*w), true))
+            if ((display & (0x2000u << w)) && Inside(xs[x], ys[y], (unsigned)w))
                 mask = (Reg(0x48) >> (8*w)) & 63;
         C2D_Flush();
         Scissor(xs[x], ys[y], xs[x+1], ys[y+1]);
@@ -2603,6 +2699,40 @@ static void Compose(void)
         sClipX0 = xs[x]; sClipX1 = xs[x+1];
         sClipY0 = ys[y]; sClipY1 = ys[y+1];
         Layers(mask);
+    }
+}
+
+static void Compose(void)
+{
+    unsigned display = Reg(0);
+    if (display & 0x8000) Error(7, "OBJ windows not supported");
+    if (!(display & 0x6000)) { Layers(63); return; }
+    if (!LineWindows())
+        ComposeBand(VIEW_TOP, VIEW_BOTTOM);
+    else
+    {
+        /* Above and below the picture no line opens a window. */
+        sLineBand.on = true;
+        sLineBand.across[0] = sLineBand.across[1] = 0;
+        sLineBand.top = VIEW_TOP;
+        sLineBand.bottom = 0;
+        if (VIEW_TOP < 0) ComposeBand(VIEW_TOP, 0);
+        for (int y = 0, next; y < 160; y = next)
+        {
+            sLineBand.across[0] = sLineWindows.across[0][y];
+            sLineBand.across[1] = sLineWindows.across[1][y];
+            for (next = y + 1; next < 160; ++next)
+                if (sLineWindows.across[0][next] != sLineBand.across[0]
+                 || sLineWindows.across[1][next] != sLineBand.across[1]) break;
+            sLineBand.top = y;
+            sLineBand.bottom = next;
+            ComposeBand(y, next);
+        }
+        sLineBand.across[0] = sLineBand.across[1] = 0;
+        sLineBand.top = 160;
+        sLineBand.bottom = VIEW_BOTTOM;
+        if (VIEW_BOTTOM > 160) ComposeBand(160, VIEW_BOTTOM);
+        sLineBand.on = false;
     }
     C2D_Flush();
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
@@ -2803,6 +2933,79 @@ static void RenderBattleScene(uint32_t clear)
     C2D_Flush();
 }
 
+/*
+ * The PokéNav's surface on the bottom screen: 240x240, the area left of the
+ * button column. It is not linked to the screen, since a linked target is
+ * copied over the whole of it and would cover the column the bottom screen
+ * draws itself; after the frame it is copied into the first 240 columns of
+ * the framebuffer, which are exactly that area (the framebuffer runs column
+ * by column from the left edge). Made when the PokéNav opens, given back a
+ * few seconds after it closes.
+ */
+#define BOTTOM_SIZE 240
+static C3D_RenderTarget *sBottom;
+static uint32_t sBottomUsed, sBottomFailFrame;
+static bool sBottomFailed;
+
+static void BottomRelease(void)
+{
+    if (sBottom) C3D_RenderTargetDelete(sBottom);
+    sBottom = NULL;
+}
+
+/* Outside the frame, where deleting a render target may wait for the GPU. */
+static bool BottomReady(bool wanted)
+{
+    if (!wanted)
+    {
+        if (sBottom && sStats.frames - sBottomUsed > LAYER_IDLE_FRAMES)
+        {
+            BottomRelease();
+            CtrLog_Write(CTR_LOG_VIDEO, "bottom screen surface released (VRAM free=%lu)",
+                         (unsigned long)vramSpaceFree());
+        }
+        return false;
+    }
+    sBottomUsed = sStats.frames;
+    if (sBottom) return true;
+    if (sBottomFailed && sStats.frames - sBottomFailFrame < LAYER_RETRY_FRAMES) return false;
+    sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_SIZE, GPU_RB_RGB565, -1);
+#if CTR_VOXEL_ENABLED
+    if (!sBottom && CtrVoxel_ReleaseIdleVram() > 0)
+        sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_SIZE, GPU_RB_RGB565, -1);
+#endif
+    if (!sBottom)
+    {
+        if (!sBottomFailed)
+            CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no VRAM for the bottom screen surface (free=%lu)",
+                         (unsigned long)vramSpaceFree());
+        sBottomFailed = true;
+        sBottomFailFrame = sStats.frames;
+        return false;
+    }
+    sBottomFailed = false;
+    CtrLog_Write(CTR_LOG_VIDEO, "bottom screen surface ready (VRAM free=%lu)", (unsigned long)vramSpaceFree());
+    return true;
+}
+
+static bool sBottomInUse;
+
+bool CtrVideo_BottomInUse(void) { return sBottomInUse; }
+
+/* After the frame: the composed picture into the bottom screen's framebuffer. */
+static void BottomTransfer(void)
+{
+    u32 *fb = (u32 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+
+    if (!sBottom || !fb || gfxGetScreenFormat(GFX_BOTTOM) != GSP_RGB565_OES) return;
+    C3D_SyncDisplayTransfer((u32 *)sBottom->frameBuf.colorBuf, GX_BUFFER_DIM(BOTTOM_SIZE, BOTTOM_SIZE),
+                            fb, GX_BUFFER_DIM(BOTTOM_SIZE, BOTTOM_SIZE),
+                            GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0)
+                            | GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565)
+                            | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565)
+                            | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+}
+
 static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
 {
     const Tex3DS_SubTexture logical = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
@@ -2828,9 +3031,25 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
     BlendForget();
     C2D_TargetClear(target, C2D_Color32(0, 0, 0, 255));
     C2D_SceneBegin(target);
-    C2D_ViewReset();
-    Blend(5, false, false);
-    C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
+    if (target == sBottom)
+    {
+        /* The middle 240 columns of the logical frame: the picture and the
+         * margins above and below it. Tilted as a screen target is. */
+        const Tex3DS_SubTexture middle = {BOTTOM_SIZE, BOTTOM_SIZE,
+            (CTR_GAME_WIDTH - BOTTOM_SIZE) / 2 / 512.0f, 1,
+            (CTR_GAME_WIDTH + BOTTOM_SIZE) / 2 / 512.0f, 1 - BOTTOM_SIZE / 256.0f};
+
+        C2D_SceneSize(BOTTOM_SIZE, BOTTOM_SIZE, true);
+        C2D_ViewReset();
+        Blend(5, false, false);
+        C2D_DrawImageAt((C2D_Image){&sSurface, &middle}, 0, 0, 0, NULL, 1, 1);
+    }
+    else
+    {
+        C2D_ViewReset();
+        Blend(5, false, false);
+        C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
+    }
     C2D_Flush();
     C3D_FrameSplit(0);
 }
@@ -3230,7 +3449,10 @@ void CtrVideo_HoldTop(bool hold)
 void CtrVideo_Present(void)
 {
     if (!sMemory.regs) CtrPlatform_Fatal("VIDEO has no logical memory bound");
-    if (sHoldTop)
+    /* The PokéNav is drawn on the bottom screen, whether or not the top is held. */
+    bool bottom = BottomReady(sCentredRequested == CTR_CENTRED_POKENAV && !sStageRequested);
+    sBottomInUse = bottom;
+    if (sHoldTop && !bottom)
     {
         gspWaitForVBlank();
         ++sStats.frames;
@@ -3268,7 +3490,9 @@ void CtrVideo_Present(void)
     if (sStage || sCentred)
     {
         sViewX = CTR_STAGE_X;
-        sViewY = CTR_STAGE_Y;
+        /* The PokeNav starts at the top of the bottom screen, its background
+         * carried on below it. */
+        sViewY = sCentredScreen == CTR_CENTRED_POKENAV ? 0 : CTR_STAGE_Y;
     }
     else if (sBattle)
     {
@@ -3379,11 +3603,18 @@ void CtrVideo_Present(void)
      * enough to be composed per eye. */
     bool planes = stereo && !overworld && !sStage && !sBattle && BandsUsable();
     if (stereo && !overworld && !sStage && !sBattle && !planes) stereo = false;
+    if (bottom) stereo = planes = false;
     if (stereo != sStereo) { gfxSet3D(stereo); sStereo = stereo; }
     sStats.stereo = stereo ? roundf(slider * CTR_STEREO_PIXELS) : 0;
     if (!voxel && !blank) LayersRender();
 
-    if (voxel)
+    if (bottom)
+    {
+        /* The top screen is not drawn: it keeps the frame it showed last. */
+        sPlanes = 0;
+        RenderEye(sBottom, clear, 0.0f);
+    }
+    else if (voxel)
     {
 #if CTR_VOXEL_ENABLED
         sPlanes = 0;
@@ -3416,10 +3647,11 @@ void CtrVideo_Present(void)
         RenderEye(sTopRight, clear, -(float)sStats.stereo);
     }
 #if CTR_SHOW_FPS
-    DrawFps(sTop);
+    if (!bottom) DrawFps(sTop);
     if (stereo) DrawFps(sTopRight);
 #endif
     C3D_FrameEnd(0);
+    if (bottom) BottomTransfer();
     ++sStats.frames;
     ++sFpsFrames;
     sStats.cpuMs = (svcGetSystemTick() - start) * 1000.0 / SYSCLOCK_ARM11;
@@ -3489,6 +3721,7 @@ void CtrVideo_SetLineScroll(unsigned reg, bool wide, const void *values, unsigne
 
 void CtrVideo_Shutdown(void)
 {
+    BottomRelease();
 #if CTR_VOXEL_ENABLED
     CtrVoxel_Shutdown();
 #endif

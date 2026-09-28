@@ -6302,6 +6302,60 @@ index dd43e310dc8c83c350a0bb714113cc95cc46969e..bb90de7d3ad9c9b3c753bbaf431025d4
 +    return sCtrYesNoOpen;
 +}
 +#endif
+diff --git a/src/mon_markings.c b/src/mon_markings.c
+index 1de8e413fd09bc2e8008c79ab21f93f4fd54b302..6c1539bedeb74048227fbbe077fe591f87a7c95b 100644
+--- a/src/mon_markings.c
++++ b/src/mon_markings.c
+@@ -9,6 +9,9 @@
+ #include "sound.h"
+ #include "sprite.h"
+ #include "text_window.h"
++#ifdef PORT_BRIDGE
++#include "port_platform.h"
++#endif
+ 
+ #define ANIM_CURSOR (NUM_MON_MARKINGS * 2)
+ #define ANIM_TEXT   (ANIM_CURSOR + 1)
+@@ -295,7 +298,13 @@ void InitMonMarkingsMenu(struct MonMarkingsMenu *ptr)
+ static void BufferMenuWindowTiles(void)
+ {
+     const struct TilesPal *frame = GetWindowFrameTilesPal(gSaveBlock2Ptr->optionsWindowFrameType);
++#ifdef PORT_BRIDGE
++    // The frame's tiles are read a tile at a time below: from the loaded data,
++    // since an offset into an INCBIN stub lands on the next asset's stub.
++    sMenu->frameTiles = Port_ResolveAssetPointer(frame->tiles);
++#else
+     sMenu->frameTiles = frame->tiles;
++#endif
+     sMenu->framePalette = frame->pal;
+     sMenu->tileLoadState = 0;
+     CpuFill16(0, sMenu->windowSpriteTiles, sizeof(sMenu->windowSpriteTiles));
+@@ -612,5 +621,25 @@ static struct Sprite *CreateMarkingComboSprite(u16 tileTag, u16 paletteTag, cons
+ // Update what combination is shown, used for sprites created with CreateMonMarkingComboSprite
+ void UpdateMonMarkingTiles(u8 markings, void *dest)
+ {
++#ifdef PORT_BRIDGE
++    // Each combination is 0x80 bytes into the loaded data, not into the stub.
++    const u8 *gfx = Port_ResolveAssetPointer(sMonMarkings_Gfx);
++    RequestDma3Copy(&gfx[markings * 0x80], dest, 0x80, 0x10);
++#else
+     RequestDma3Copy(&sMonMarkings_Gfx[markings * 0x80], dest, 0x80, 0x10);
++#endif
+ }
++
++#ifdef PLATFORM_3DS
++// The open markings menu, for the 3DS bottom screen: its cursor, and its top
++// left corner (row i is centred on line y + 16 + 16 * i, 64 pixels wide).
++bool8 CtrMonMarkings_Menu(s8 *cursor, s16 *x, s16 *y)
++{
++    if (sMenu == NULL || sMenu->cursorSprite == NULL || sMenu->windowSprites[0] == NULL)
++        return FALSE;
++    *cursor = sMenu->cursorPos;
++    *x = sMenu->windowSprites[0]->x - 32;
++    *y = sMenu->windowSprites[0]->y - 32;
++    return TRUE;
++}
++#endif
 diff --git a/src/multiboot.c b/src/multiboot.c
 index 15b062ed65ee0c75607ea8cd14ce80f1544f974e..93cb72b26b5766f47ef7a2c36034e948d798c706 100644
 --- a/src/multiboot.c
@@ -7956,11 +8010,125 @@ index 21109f9c3cb325fa4da3d05145833f7341c26f65..a5886fd6a99d2b326f17528a81e9608f
  // Toggles the "Cancel" window that appears when selecting a move
  static void TilemapFiveMovesDisplay(u16 *dst, u16 palette, bool8 remove)
  {
+diff --git a/src/pokenav.c b/src/pokenav.c
+index 03f48ee3669c3411f124ebeaf5fa936809cccf6c..220bf26d71cbe43fb92fbb459b251b3fba1dfdc9 100644
+--- a/src/pokenav.c
++++ b/src/pokenav.c
+@@ -588,3 +588,24 @@ bool32 CanViewRibbonsMenu(void)
+ {
+     return gPokenavResources->hasAnyRibbons;
+ }
++
++#ifdef PLATFORM_3DS
++// The 3DS bottom screen shows the PokéNav while it runs.
++bool8 CtrPokenav_IsOpen(void)
++{
++    return gMain.callback2 == CB2_Pokenav;
++}
++
++// The screen on show (POKENAV_MAIN_MENU...), and whether it waits for input:
++// Task_Pokenav reads the menu's input callback, nothing is animating or fading.
++u32 CtrPokenav_Screen(bool8 *ready)
++{
++    u8 taskId = FindTaskIdByFunc(Task_Pokenav);
++
++    *ready = FALSE;
++    if (gPokenavResources == NULL || taskId == TASK_NONE)
++        return 0;
++    *ready = gTasks[taskId].data[0] == 3 && !gPaletteFade.active;
++    return gPokenavResources->currentMenuIndex + POKENAV_MENU_IDS_START;
++}
++#endif
+diff --git a/src/pokenav_conditions.c b/src/pokenav_conditions.c
+index 1ebf6edbe9a286b0e05944ca7b51567e14d830d9..cde8c2132997e5e5256833ac0b4152db506e5ced 100644
+--- a/src/pokenav_conditions.c
++++ b/src/pokenav_conditions.c
+@@ -628,3 +628,13 @@ u8 GetNumConditionMonSparkles(void)
+     struct Pokenav_ConditionMenu *menu = GetSubstructPtr(POKENAV_SUBSTRUCT_CONDITION_GRAPH_MENU);
+     return menu->numSparkles[menu->loadId];
+ }
++
++#ifdef PLATFORM_3DS
++// Whether the condition graph's markings menu is open, for the 3DS bottom screen.
++bool8 CtrPokenavCondition_Marking(void)
++{
++    struct Pokenav_ConditionMenu *menu = GetSubstructPtr(POKENAV_SUBSTRUCT_CONDITION_GRAPH_MENU);
++
++    return menu != NULL && menu->callback == OpenMarkingsMenu;
++}
++#endif
+diff --git a/src/pokenav_list.c b/src/pokenav_list.c
+index 9d1c561d1fd644602dbe0f73bfb2aff23ce700ef..155803d7266f846c8d141d46f5f6f10c0fa19912 100644
+--- a/src/pokenav_list.c
++++ b/src/pokenav_list.c
+@@ -1009,3 +1009,24 @@ static bool32 CopyPokenavListMenuTemplate(struct PokenavListSub *dest, const str
+     dest->downArrow = NULL;
+     return 1;
+ }
++
++#ifdef PLATFORM_3DS
++// The list on show, for the 3DS bottom screen: its window in pixels (item i
++// on screen is 16 lines from y + (i - top) * 16), the item at the top, the
++// chosen one, how many fit and how many there are.
++bool8 CtrPokenavList_View(u8 *x, u8 *y, u8 *width, u16 *top, u16 *selected, u16 *shown, u16 *count)
++{
++    struct PokenavList *list = GetSubstructPtr(POKENAV_SUBSTRUCT_LIST);
++
++    if (list == NULL)
++        return FALSE;
++    *x = list->sub.listWindow.x * 8;
++    *y = list->sub.listWindow.y * 8;
++    *width = list->sub.listWindow.width * 8;
++    *top = list->windowState.windowTopIndex;
++    *selected = list->windowState.windowTopIndex + list->windowState.selectedIndexOffset;
++    *shown = list->windowState.entriesOnscreen;
++    *count = list->windowState.listLength;
++    return TRUE;
++}
++#endif
 diff --git a/src/pokenav_main_menu.c b/src/pokenav_main_menu.c
-index 761f572d6bdac651fd2f0cdbe087846e230b9166..77d6f2ba0e6b7f8f73315d3d985b23d4e1785989 100644
+index 761f572d6bdac651fd2f0cdbe087846e230b9166..0bb20f85ed9c9a4f04d04f4ca7d0997dd1e84dc2 100644
 --- a/src/pokenav_main_menu.c
 +++ b/src/pokenav_main_menu.c
-@@ -683,7 +683,7 @@ static void LoadLeftHeaderGfxForMenu(u32 menuGfxId)
+@@ -1,5 +1,8 @@
+ #include "global.h"
+ #include "pokenav.h"
++#ifdef PORT_BRIDGE
++#include "port_platform.h"
++#endif
+ #include "constants/songs.h"
+ #include "sound.h"
+ #include "constants/rgb.h"
+@@ -443,6 +446,17 @@ static u32 LoopedTask_SlideMenuHeaderDown(s32 state)
+ 
+ void CopyPaletteIntoBufferUnfaded(const u16 *palette, u32 bufferOffset, u32 size)
+ {
++#ifdef PORT_BRIDGE
++    // As in LoadPalette: sizeof an unsized INCBIN_U16 array is its one
++    // placeholder, not the palette.
++    if (size == sizeof(u16))
++    {
++        u32 assetSize = Port_GetAssetSizeExact(palette);
++
++        if (assetSize > size && assetSize <= PLTT_SIZE && assetSize % sizeof(u16) == 0)
++            size = assetSize;
++    }
++#endif
+     CpuCopy16(palette, &gPlttBufferUnfaded[bufferOffset], size);
+ }
+ 
+@@ -473,6 +487,10 @@ void PokenavFillPalette(u32 palIndex, u16 fillValue)
+ 
+ void PokenavCopyPalette(const u16 *src, const u16 *dest, int size, int a3, int a4, u16 *palette)
+ {
++#ifdef PORT_BRIDGE
++    src = Port_ResolveAssetPointer(src);
++    dest = Port_ResolveAssetPointer(dest);
++#endif
+     if (a4 == 0)
+     {
+         CpuCopy16(src, palette, size * 2);
+@@ -683,7 +701,7 @@ static void LoadLeftHeaderGfxForMenu(u32 menuGfxId)
      menu = GetSubstructPtr(POKENAV_SUBSTRUCT_MAIN_MENU);
      tag = sMenuLeftHeaderSpriteSheets[menuGfxId].tag;
      size = GetDecompressedDataSize(sMenuLeftHeaderSpriteSheets[menuGfxId].data);
@@ -7969,7 +8137,7 @@ index 761f572d6bdac651fd2f0cdbe087846e230b9166..77d6f2ba0e6b7f8f73315d3d985b23d4
      LZ77UnCompWram(sMenuLeftHeaderSpriteSheets[menuGfxId].data, gDecompressionBuffer);
      RequestDma3Copy(gDecompressionBuffer, (void *)OBJ_VRAM0 + (GetSpriteTileStartByTag(2) * 32), size, 1);
      menu->leftHeaderSprites[1]->oam.tileNum = GetSpriteTileStartByTag(2) + sMenuLeftHeaderSpriteSheets[menuGfxId].size;
-@@ -703,7 +703,7 @@ static void LoadLeftHeaderGfxForSubMenu(u32 menuGfxId)
+@@ -703,7 +721,7 @@ static void LoadLeftHeaderGfxForSubMenu(u32 menuGfxId)
  
      tag = sPokenavSubMenuLeftHeaderSpriteSheets[menuGfxId].tag;
      size = GetDecompressedDataSize(sPokenavSubMenuLeftHeaderSpriteSheets[menuGfxId].data);
@@ -8105,10 +8273,36 @@ index 3f47550f1710d4777ab4819dc0966610c71b9889..1c3cf9aeeb02309ca6231d66bd49a4cc
 diff --git a/src/pokenav_match_call_gfx.c b/src/pokenav_match_call_gfx.c
 old mode 100755
 new mode 100644
-index dde725d8bd465518929d48249a409f4907287b8b..4271e2ff23b9cb8b85a14d0b3a16aae5c4ea74e9
+index dde725d8bd465518929d48249a409f4907287b8b..7e3831345174feee76426c334f5d7e1989ff1116
 --- a/src/pokenav_match_call_gfx.c
 +++ b/src/pokenav_match_call_gfx.c
-@@ -1022,7 +1022,7 @@ static void PrintMatchCallLocation(struct Pokenav_MatchCallGfx *gfx, int delta)
+@@ -10,6 +10,9 @@
+ #include "overworld.h"
+ #include "palette.h"
+ #include "pokenav.h"
++#ifdef PORT_BRIDGE
++#include "port_platform.h"
++#endif
+ #include "region_map.h"
+ #include "sound.h"
+ #include "sprite.h"
+@@ -913,7 +916,15 @@ static void Task_FlashPokeballIcons(u8 taskId)
+         tSinIdx += 4;
+         tSinIdx &= 0x7F;
+         tSinVal = gSineTable[tSinIdx] >> 4;
++#ifdef PORT_BRIDGE
++        {
++            // sPokeball_Pal is a stub: its second palette is in the loaded data.
++            const u16 *pal = Port_ResolveAssetPointer(sPokeball_Pal);
++            PokenavCopyPalette(pal, &pal[0x10], 0x10, 0x10, tSinVal, &gPlttBufferUnfaded[BG_PLTT_ID(5)]);
++        }
++#else
+         PokenavCopyPalette(sPokeball_Pal, &sPokeball_Pal[0x10], 0x10, 0x10, tSinVal, &gPlttBufferUnfaded[BG_PLTT_ID(5)]);
++#endif
+         if (!gPaletteFade.active)
+             CpuCopy32(&gPlttBufferUnfaded[BG_PLTT_ID(5)], &gPlttBufferFaded[BG_PLTT_ID(5)], PLTT_SIZE_4BPP);
+     }
+@@ -1022,7 +1033,7 @@ static void PrintMatchCallLocation(struct Pokenav_MatchCallGfx *gfx, int delta)
      u8 mapName[32];
      int x;
      int index = PokenavList_GetSelectedIndex() + delta;
@@ -8120,7 +8314,7 @@ index dde725d8bd465518929d48249a409f4907287b8b..4271e2ff23b9cb8b85a14d0b3a16aae5
 diff --git a/src/pokenav_match_call_list.c b/src/pokenav_match_call_list.c
 old mode 100755
 new mode 100644
-index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..fb89e33e0b23b0cd0af263b96dc9a3ce6b4def10
+index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..e000cf291da494ec1c6dc1474bc74698f4c98529
 --- a/src/pokenav_match_call_list.c
 +++ b/src/pokenav_match_call_list.c
 @@ -306,7 +306,7 @@ struct PokenavMatchCallEntry *GetMatchCallList(void)
@@ -8141,11 +8335,137 @@ index 8f8fc6b4c25a09937ba494f32632106b6d8ffac2..fb89e33e0b23b0cd0af263b96dc9a3ce
  {
      int mapGroup = gRematchTable[rematchIndex].mapGroup;
      int mapNum = gRematchTable[rematchIndex].mapNum;
+@@ -515,3 +515,26 @@ static bool32 ShouldDoNearbyMessage(void)
+ 
+     return FALSE;
+ }
++
++#ifdef PLATFORM_3DS
++// What Match Call waits for, for the 3DS bottom screen: 0 the trainer list,
++// 1 its options (cursor and count), 2 a check page, 3 the end of a call.
++u8 CtrPokenavMatchCall_Input(u16 *cursor, u16 *count)
++{
++    struct Pokenav_MatchCallMenu *state = GetSubstructPtr(POKENAV_SUBSTRUCT_MATCH_CALL_MAIN);
++
++    if (state == NULL)
++        return 0xFF;
++    *cursor = state->optionCursorPos;
++    *count = state->maxOptionId + 1;
++    if (state->callback == CB2_HandleMatchCallInput)
++        return 0;
++    if (state->callback == CB2_HandleMatchCallOptionsInput)
++        return 1;
++    if (state->callback == CB2_HandleCheckPageInput)
++        return 2;
++    if (state->callback == CB2_HandleCallExitInput)
++        return 3;
++    return 0xFF;
++}
++#endif
+diff --git a/src/pokenav_menu_handler.c b/src/pokenav_menu_handler.c
+index d67f61c1ea46c9b36e5080da106156db51e3ff86..72eca93516f9d2f08984b39e61b54a82e09300d5 100644
+--- a/src/pokenav_menu_handler.c
++++ b/src/pokenav_menu_handler.c
+@@ -511,3 +511,17 @@ u16 GetHelpBarTextId(void)
+     struct Pokenav_Menu *menu = GetSubstructPtr(POKENAV_SUBSTRUCT_MAIN_MENU_HANDLER);
+     return menu->helpBarIndex;
+ }
++
++#ifdef PLATFORM_3DS
++// The 3DS bottom screen turns a tap on an option into the presses that pick
++// it: how many options the menu on show has, and which the cursor is on.
++int CtrPokenavMenu_Options(int *cursor)
++{
++    struct Pokenav_Menu *menu = GetSubstructPtr(POKENAV_SUBSTRUCT_MAIN_MENU_HANDLER);
++
++    if (menu == NULL)
++        return 0;
++    *cursor = menu->cursorPos;
++    return sLastCursorPositions[menu->menuType] + 1;
++}
++#endif
 diff --git a/src/pokenav_menu_handler_gfx.c b/src/pokenav_menu_handler_gfx.c
-index a4cdf48980c6e14a2da1c0cfbc00aa999bc10e18..ce17f33cfc52a4c16da18fc4b5117a4628e087e4 100644
+index a4cdf48980c6e14a2da1c0cfbc00aa999bc10e18..8c5660ff5e326186ab0eba09afa2a0ce7e3cf45e 100644
 --- a/src/pokenav_menu_handler_gfx.c
 +++ b/src/pokenav_menu_handler_gfx.c
-@@ -1315,14 +1315,7 @@ static void SetupPokenavMenuScanlineEffects(void)
+@@ -8,6 +8,9 @@
+ #include "menu.h"
+ #include "window.h"
+ #include "pokenav.h"
++#ifdef PORT_BRIDGE
++#include "port_platform.h"
++#endif
+ #include "graphics.h"
+ #include "sound.h"
+ #include "gym_leader_rematch.h"
+@@ -100,6 +103,12 @@ static void Task_CurrentMenuOptionGlow(u8);
+ static void SetMenuOptionGlow(void);
+ 
+ static const u16 sPokenavBgDotsPal[] = INCBIN_U16("graphics/pokenav/bg_dots.gbapal");
++#ifdef PORT_BRIDGE
++// A stub on the port: colours inside it are read from the loaded data.
++#define BgDotsPal() ((const u16 *)Port_ResolveAssetPointer(sPokenavBgDotsPal))
++#else
++#define BgDotsPal() sPokenavBgDotsPal
++#endif
+ static const u32 sPokenavBgDotsTiles[] = INCBIN_U32("graphics/pokenav/bg_dots.4bpp.lz");
+ static const u32 sPokenavBgDotsTilemap[] = INCBIN_U32("graphics/pokenav/bg_dots.bin.lz");
+ static const u16 sPokenavDeviceBgPal[] = INCBIN_U16("graphics/pokenav/device_outline.gbapal");
+@@ -794,10 +803,27 @@ static u32 LoopedTask_OpenPokenavFeature(s32 state)
+ static void LoadPokenavOptionPalettes(void)
+ {
+     s32 i;
++#ifdef PORT_BRIDGE
++    // gPokenavOptions_Pal is a stub here: &gPokenavOptions_Pal[0x10] is the
++    // address of the next asset, not the second palette. Offset the loaded data.
++    struct SpritePalette palettes[ARRAY_COUNT(sPokenavOptionsSpritePalettes)];
++    const u16 *options = Port_ResolveAssetPointer(gPokenavOptions_Pal);
++
++    for (i = 0; i < (s32)ARRAY_COUNT(palettes); i++)
++    {
++        palettes[i] = sPokenavOptionsSpritePalettes[i];
++        if (palettes[i].data >= gPokenavOptions_Pal && palettes[i].data < gPokenavOptions_Pal + 0x50)
++            palettes[i].data = options + (palettes[i].data - gPokenavOptions_Pal);
++    }
++#endif
+ 
+     for (i = 0; i < ARRAY_COUNT(sPokenavOptionsSpriteSheets); i++)
+         LoadCompressedSpriteSheet(&sPokenavOptionsSpriteSheets[i]);
++#ifdef PORT_BRIDGE
++    Pokenav_AllocAndLoadPalettes(palettes);
++#else
+     Pokenav_AllocAndLoadPalettes(sPokenavOptionsSpritePalettes);
++#endif
+ }
+ 
+ static void FreeAndDestroyMainMenuSprites(void)
+@@ -1266,20 +1292,20 @@ static void Task_MoveBgDots(u8 taskId)
+ static void CreateBgDotPurplePalTask(void)
+ {
+     u8 taskId = CreateTask(Task_UpdateBgDotsPalette, 3);
+-    SetWordTaskArg(taskId, 1, (uintptr_t)(sPokenavBgDotsPal + 1));
+-    SetWordTaskArg(taskId, 3, (uintptr_t)(sPokenavBgDotsPal + 7));
++    SetWordTaskArg(taskId, 1, (uintptr_t)(BgDotsPal() + 1));
++    SetWordTaskArg(taskId, 3, (uintptr_t)(BgDotsPal() + 7));
+ }
+ 
+ static void ChangeBgDotsColorToPurple(void)
+ {
+-    CopyPaletteIntoBufferUnfaded(sPokenavBgDotsPal + 7, BG_PLTT_ID(3) + 1, PLTT_SIZEOF(2));
++    CopyPaletteIntoBufferUnfaded(BgDotsPal() + 7, BG_PLTT_ID(3) + 1, PLTT_SIZEOF(2));
+ }
+ 
+ static void CreateBgDotLightBluePalTask(void)
+ {
+     u8 taskId = CreateTask(Task_UpdateBgDotsPalette, 3);
+-    SetWordTaskArg(taskId, 1, (uintptr_t)(sPokenavBgDotsPal + 7));
+-    SetWordTaskArg(taskId, 3, (uintptr_t)(sPokenavBgDotsPal + 1));
++    SetWordTaskArg(taskId, 1, (uintptr_t)(BgDotsPal() + 7));
++    SetWordTaskArg(taskId, 3, (uintptr_t)(BgDotsPal() + 1));
+ }
+ 
+ static bool32 IsTaskActive_UpdateBgDotsPalette(void)
+@@ -1315,14 +1341,7 @@ static void SetupPokenavMenuScanlineEffects(void)
      SetGpuRegBits(REG_OFFSET_DISPCNT, DISPCNT_WIN0_ON);
      SetGpuRegBits(REG_OFFSET_WININ, WININ_WIN0_ALL);
      SetGpuRegBits(REG_OFFSET_WINOUT, WINOUT_WIN01_BG_ALL | WINOUT_WIN01_OBJ);
@@ -8160,6 +8480,22 @@ index a4cdf48980c6e14a2da1c0cfbc00aa999bc10e18..ce17f33cfc52a4c16da18fc4b5117a46
      ScanlineEffect_Stop();
      SetMenuOptionGlow();
      ScanlineEffect_SetParams(sPokenavMainMenuScanlineEffectParams);
+@@ -1378,3 +1397,15 @@ void ResetBldCnt_(void)
+ {
+     ResetBldCnt();
+ }
++
++#ifdef PLATFORM_3DS
++// Where the options of the menu on show are: option i is centred on line
++// yStart + deltaY * i, as the glow behind the chosen one is (SetMenuOptionGlow).
++void CtrPokenavMenu_Rows(int *yStart, int *deltaY)
++{
++    int menuType = GetPokenavMenuType();
++
++    *yStart = sPokenavMenuOptionLabelGfx[menuType].yStart;
++    *deltaY = sPokenavMenuOptionLabelGfx[menuType].deltaY;
++}
++#endif
 diff --git a/src/pokenav_region_map.c b/src/pokenav_region_map.c
 old mode 100755
 new mode 100644
@@ -8204,6 +8540,33 @@ index 8475bbacb8ca74074f802049007cda103343e513..f81ff42966390ec5b1dc9e9bbe726578
  {
      int i = 0;
      while (1)
+diff --git a/src/pokenav_ribbons_summary.c b/src/pokenav_ribbons_summary.c
+index c799daf57bbf54738ee761676271ed9a7955c709..4b368f5c175ff8ec3b80bd677051e704007db1f8 100644
+--- a/src/pokenav_ribbons_summary.c
++++ b/src/pokenav_ribbons_summary.c
+@@ -1269,3 +1269,22 @@ static void SpriteCB_WaitForRibbonAnimation(struct Sprite *sprite)
+         sprite->callback = SpriteCallbackDummy;
+     }
+ }
++
++#ifdef PLATFORM_3DS
++// The ribbon summary, for the 3DS bottom screen: the chosen ribbon position
++// (RIBBONS_PER_ROW to a row, 16 pixels each from (88, 32), gift ribbons from
++// GIFT_RIBBON_START_POS), how many of each kind, and whether one is picked.
++bool8 CtrPokenavRibbons_Summary(u16 *selected, u16 *normal, u16 *gift, u16 *giftStart, bool8 *expanded)
++{
++    struct Pokenav_RibbonsSummaryList *list = GetSubstructPtr(POKENAV_SUBSTRUCT_RIBBONS_SUMMARY_LIST);
++
++    if (list == NULL)
++        return FALSE;
++    *selected = list->selectedPos;
++    *normal = list->numNormalRibbons;
++    *gift = list->numGiftRibbons;
++    *giftStart = GIFT_RIBBON_START_POS;
++    *expanded = list->callback == HandleExpandedRibbonInput;
++    return TRUE;
++}
++#endif
 diff --git a/src/rayquaza_scene.c b/src/rayquaza_scene.c
 index d97d4631353cc1974d16279deef161099395755f..3264b22bdf08efe66771f836c73cf033da62a72c 100644
 --- a/src/rayquaza_scene.c
@@ -8226,7 +8589,7 @@ index d97d4631353cc1974d16279deef161099395755f..3264b22bdf08efe66771f836c73cf033
      sRayScene = AllocZeroed(sizeof(*sRayScene));
      sRayScene->animId = animId;
 diff --git a/src/region_map.c b/src/region_map.c
-index a418b7fe4fbb2026185a1e527de8f711cf05671b..fe6ced1d5cafce26d432ffaeaaa8a23f25fe54aa 100644
+index a418b7fe4fbb2026185a1e527de8f711cf05671b..b87539d7eae59edbb4d09badaa2de46e39944146 100644
 --- a/src/region_map.c
 +++ b/src/region_map.c
 @@ -63,7 +63,7 @@ enum {
@@ -8481,6 +8844,26 @@ index a418b7fe4fbb2026185a1e527de8f711cf05671b..fe6ced1d5cafce26d432ffaeaaa8a23f
  }
  
  #undef sIconMapSec
+@@ -2025,3 +2030,19 @@ static void CB_ExitFlyMap(void)
+         break;
+     }
+ }
++
++#ifdef PLATFORM_3DS
++// The PokéNav map's cursor on screen, for the 3DS bottom screen, and whether
++// it is still moving (a move reads no keys until it ends). FALSE without a region map.
++bool8 CtrRegionMap_Cursor(s16 *x, s16 *y, bool8 *zoomed, bool8 *moving)
++{
++    if (sRegionMap == NULL || sRegionMap->cursorSprite == NULL)
++        return FALSE;
++    *x = sRegionMap->cursorSprite->x + sRegionMap->cursorSprite->x2;
++    *y = sRegionMap->cursorSprite->y + sRegionMap->cursorSprite->y2;
++    *zoomed = sRegionMap->zoomed;
++    *moving = sRegionMap->inputCallback != ProcessRegionMapInput_Full
++           && sRegionMap->inputCallback != ProcessRegionMapInput_Zoomed;
++    return TRUE;
++}
++#endif
 diff --git a/src/roulette.c b/src/roulette.c
 index f4e6012a8dcda85e13d95448e387715ff7416e73..7970d790ed59a8851f9e2ea6577f7fe64bb4328d 100644
 --- a/src/roulette.c

@@ -112,7 +112,7 @@ static void SampleAudioStats(void)
  * frames keep whatever the last callback said, so a scene change does not
  * flash the next frame at the other scale.
  */
-#define CTR_STAGE_CALLBACKS 8
+#define CTR_STAGE_CALLBACKS 24
 typedef struct
 {
     IntrCallback callbacks[CTR_STAGE_CALLBACKS];
@@ -173,6 +173,11 @@ void CtrCentredClock_SetVBlankCallback(IntrCallback callback)
     SetCentredCallback(callback, CTR_CENTRED_CLOCK);
 }
 
+void CtrCentredPokenav_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_POKENAV);
+}
+
 void CtrBattle_SetVBlankCallback(IntrCallback callback)
 {
     RememberCallback(&sBattle, callback, 0);
@@ -214,18 +219,24 @@ static void UpdateStage(void)
  * The per-scanline register values of the frame about to be presented. On a
  * GBA an HBlank DMA feeds them to one register line by line; here the VBlank
  * handler has just armed that transfer (ScanlineEffect_InitHBlankDmaTransfer)
- * and swapped buffers, so the buffer the DMA would read is the other one. Only
- * background scroll registers are handed over, which is what the waves of the
- * intro and the title screen drive.
+ * and swapped buffers, so the buffer the DMA would read is the other one.
+ * Background scroll registers are handed over, which is what the waves of the
+ * intro and the title screen drive, and window 0's edges, which the PokéNav
+ * moves to light its chosen option.
  */
 static void CaptureLineScroll(void)
 {
     const struct ScanlineEffect *effect = &gScanlineEffect;
     uintptr_t reg = (uintptr_t)effect->dmaDest - (uintptr_t)REG_ADDR_BG0HOFS;
     bool wide = ((effect->dmaControl >> 16) & DMA_32BIT) != 0;
+    bool active = effect->state != 0 && effect->state != 3 && effect->dmaDest;
 
-    if (effect->state == 0 || effect->state == 3 || !effect->dmaDest
-        || reg >= 0x10 || (reg & 1) || (wide && reg + 4 > 0x10))
+    /* 32-bit: WIN0H and WIN1H together, as the condition graph writes them. */
+    if (active && effect->dmaDest == &REG_WIN0H)
+        CtrVideo_SetLineWindow(effect->dmaSrcBuffers[effect->srcBuffer ^ 1], 160, wide);
+    else
+        CtrVideo_SetLineWindow(NULL, 0, false);
+    if (!active || reg >= 0x10 || (reg & 1) || (wide && reg + 4 > 0x10))
     {
         CtrVideo_SetLineScroll(0, false, NULL, 0);
         return;

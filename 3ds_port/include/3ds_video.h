@@ -80,9 +80,24 @@ enum
     CTR_CENTRED_MAIN_MENU,
     CTR_CENTRED_NAMING,
     CTR_CENTRED_CLOCK,
+    /*
+     * The PokéNav, composed as the others but shown on the bottom screen: its
+     * 240x240 area left of the button column, the picture in the middle of
+     * it. The top screen keeps the frame it last showed meanwhile.
+     */
+    CTR_CENTRED_POKENAV,
     CTR_CENTRED_SCREENS
 };
 void CtrVideo_SetCentred(unsigned screen);
+/*
+ * The window edges an HBlank DMA writes line by line (the PokéNav's glow
+ * behind its chosen option, its condition graph): values holds WIN0H for each
+ * line, or WIN0H and WIN1H with both; NULL turns it off. Only the PokéNav's
+ * screens are composed with them.
+ */
+void CtrVideo_SetLineWindow(const uint16_t *values, unsigned lines, bool both);
+/* Whether the last frame drew the PokéNav into the bottom screen's left area. */
+bool CtrVideo_BottomInUse(void);
 /*
  * Whether the frames that follow are the battle scene: the 240x160 picture 1:1
  * at (CTR_BATTLE_X, CTR_BATTLE_Y), so that its text box lies on the bottom
