@@ -277,6 +277,8 @@ static bool sFieldLayers;
 #define CTR_BANDS 3
 static C3D_Tex sBandTex[CTR_BANDS];
 static C3D_RenderTarget *sBand[CTR_BANDS];
+/* How many of them exist: two when the third gave its VRAM to a layer. */
+static unsigned sBandCount;
 static bool sBandsFailed;
 /* A failed allocation is tried again this many frames later, not never: the
  * VRAM it needs may have been in use by the overworld only for a while. */
@@ -1580,11 +1582,13 @@ static bool sLayerReady[4];
 static uint32_t sLayerFailFrame;
 /*
  * A stage whose layer textures found no VRAM because the depth planes hold it.
- * Its layers drawn tile by tile cost 30 ms a frame on an Old 3DS, composing it
- * per eye from its textures a few, so the planes give way to them: released
- * before the next frame and not asked for again until the stage is over.
+ * Its layers drawn tile by tile cost 30 ms a frame on an Old 3DS, so the
+ * planes give way to them: first the nearest (sPlaneShrinkAsked), which is
+ * what the intro needs, and only with two left all of them, the stage then
+ * composed per eye - twice the work, 30 fps - until it is over.
  */
 static bool sStageWithoutPlanes;
+static bool sPlaneShrinkAsked;
 static bool sBandsReady;
 void CtrVideo_RequestPlaneRelease(void);
 
@@ -1677,9 +1681,15 @@ static void LayersPrepare(void)
                 LayerRelease(bg);
                 if (sStage && sBandsReady)
                 {
-                    /* Tile by tile for this one frame; the planes go. */
-                    sStageWithoutPlanes = true;
-                    CtrVideo_RequestPlaneRelease();
+                    /* Tile by tile for this one frame; a plane goes, or with
+                     * only two left, all of them (sPlaneShrinkAsked). */
+                    if (sBandCount > 2)
+                        sPlaneShrinkAsked = true;
+                    else
+                    {
+                        sStageWithoutPlanes = true;
+                        CtrVideo_RequestPlaneRelease();
+                    }
                     continue;
                 }
                 if (!sLayerFailFrame)
@@ -3414,7 +3424,7 @@ static unsigned DepthPlanes(void)
             priority = (sMemory.oam[i * 4 + 2] >> 10) & 3;
             if (priority < merge) merge = priority;
         }
-    return merge + 1 > CTR_BANDS ? CTR_BANDS : merge + 1;
+    return merge + 1 > sBandCount ? sBandCount : merge + 1;
 }
 
 /*
@@ -3435,6 +3445,15 @@ void CtrVideo_RequestPlaneRelease(void)
 }
 
 /*
+ * Asked by a stage whose layer textures did not fit beside three planes: the
+ * intro's four 256x512 layers (1 MiB) and three planes (768 KiB) are more than
+ * an Old 3DS has free. Giving up the nearest plane is enough for them, and the
+ * stage keeps two depths; giving up all of them had it composed per eye, and
+ * at 30 fps.
+ */
+static bool sPlaneShrinkAsked;
+
+/*
  * Set inside a frame that wanted the planes and found none. They are made
  * before the next frame opens: a failed attempt frees the planes it did get,
  * and C3D_RenderTargetDelete inside an open frame is svcBreak(USERBREAK_PANIC)
@@ -3452,7 +3471,20 @@ static void BandsRelease(void)
         sBand[i] = NULL;
         memset(&sBandTex[i], 0, sizeof(sBandTex[i]));
     }
+    sBandCount = 0;
     sBandsReady = false;
+}
+
+/* The last plane goes; outside the frame, like BandsRelease. */
+static void BandsShrink(void)
+{
+    unsigned last = sBandCount - 1;
+
+    C3D_RenderTargetDelete(sBand[last]);
+    C3D_TexDelete(&sBandTex[last]);
+    sBand[last] = NULL;
+    memset(&sBandTex[last], 0, sizeof(sBandTex[last]));
+    --sBandCount;
 }
 
 /* Allocated on first use: a console that never opens the 3D slider never pays
@@ -3520,6 +3552,7 @@ static bool BandsCreate(void)
          * per plane per frame is memory traffic this path exists to avoid. */
         sBand[i] = C3D_RenderTargetCreateFromTex(&sBandTex[i], GPU_TEXFACE_2D, 0, -1);
         if (!sBand[i]) goto fail;
+        sBandCount = i + 1;
     }
     return true;
 fail:
@@ -3704,7 +3737,13 @@ void CtrVideo_Present(void)
         CtrLog_Write(CTR_LOG_VIDEO, "3D depth planes released (VRAM free=%lu)",
                      (unsigned long)vramSpaceFree());
     }
-    sPlaneReleaseAsked = false;
+    else if (sBandsReady && sPlaneShrinkAsked && sBandCount > 2)
+    {
+        BandsShrink();
+        CtrLog_Write(CTR_LOG_VIDEO, "3D depth planes: %u, the rest to a stage layer (VRAM free=%lu)",
+                     sBandCount, (unsigned long)vramSpaceFree());
+    }
+    sPlaneReleaseAsked = sPlaneShrinkAsked = false;
     if (sLeavesTex[0].data && sStats.frames - sLeavesUsed > 120) LeavesRelease();
     if (sBandsWanted)
     {
