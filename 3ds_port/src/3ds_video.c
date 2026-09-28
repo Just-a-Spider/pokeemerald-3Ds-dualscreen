@@ -1241,6 +1241,9 @@ static void DrawBattleBg(unsigned bg)
  *   plain field or a pattern of one tile, so it carries on as if the screen
  *   were wider: the clock's teal, the naming screen's stripes and title bar,
  *   the sky of the professor's speech.
+ * - skyRows: the speech's sky, the first rows of its background, drawn from
+ *   the top of the screen rather than the top of the picture, so it starts at
+ *   the top-left corner and carries on to the right as the rest does.
  * - band: the text box of the professor's speech (BG0 from bandRow down)
  *   drawn moved by (bandX, bandY), to where the overworld shows its text box
  *   (menu.c, sStandardTextBox_WindowTemplates, and CTR_FIELD_UI_SHIFT). It
@@ -1254,13 +1257,13 @@ typedef struct
     int8_t inset[4];
     /* Only beside the picture, nothing above or below it. */
     bool across;
-    uint8_t bandRow, bandChars;
+    uint8_t skyRows, bandRow, bandChars;
     int8_t bandX, bandY;
 } CentredFill;
 
 static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
 {
-    [CTR_CENTRED_MAIN_MENU] = {.layers = 1u << 1, .across = true, .bandRow = 14, .bandChars = 3,
+    [CTR_CENTRED_MAIN_MENU] = {.layers = 1u << 1, .across = true, .skyRows = 4, .bandRow = 14, .bandChars = 3,
                                .bandX = -4, .bandY = 32},
     /* Inside the yellow border; the title bar is its top row. */
     [CTR_CENTRED_NAMING] = {.layers = 1u << 3, .inset = {2, 0, 2, 1}},
@@ -1281,7 +1284,8 @@ static int FloorDiv8(int value)
     return value >= 0 ? value / 8 : -((7 - value) / 8);
 }
 
-static void DrawCentredMargins(unsigned bg, const CentredFill *fill)
+/* The margins of the picture's rows from, up to to (beside it: across). */
+static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, int to)
 {
     unsigned control = Reg(8 + bg * 2), size = control >> 14;
     unsigned map = ((control >> 8) & 31) * 0x800;
@@ -1292,7 +1296,8 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill)
     int ox = (int)(scrollX & 7), oy = (int)(scrollY & 7);
 
     ViewBase();
-    for (int w = FloorDiv8(sClipY0 + oy); w * 8 - oy < sClipY1; ++w)
+    if (from < FloorDiv8(sClipY0 - sSpanShiftY + oy)) from = FloorDiv8(sClipY0 - sSpanShiftY + oy);
+    for (int w = from; w < to && w * 8 - oy + sSpanShiftY < sClipY1; ++w)
     {
         bool beside = w >= 0 && w < 20;
         unsigned row = w < 0 ? (unsigned)fill->inset[1] : w >= 20 ? 19u - (unsigned)fill->inset[3]
@@ -1315,7 +1320,7 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill)
             if (address >= 0x10000) continue;
             slot = GetTileSlot(address, entry >> 12, color256);
             if (slot >= 0)
-                DrawSlot(slot, v * 8 - ox + CTR_VIEW_X + sLayerShift, w * 8 - oy + CTR_VIEW_Y,
+                DrawSlot(slot, v * 8 - ox + CTR_VIEW_X + sLayerShift, w * 8 - oy + sSpanShiftY + CTR_VIEW_Y,
                          entry & 1024, entry & 2048);
         }
     }
@@ -1326,13 +1331,24 @@ static bool DrawCentredBg(unsigned bg)
 {
     const CentredFill *fill = &sCentredFills[sCentredScreen];
 
+    bool speech = fill->bandRow && ((Reg(8) >> 2) & 3) == fill->bandChars;
+
     if (fill->layers & (1u << bg))
     {
-        DrawCentredSpan(bg, 0, 240, 0, 160);
-        DrawCentredMargins(bg, fill);
+        int sky = speech ? fill->skyRows : 0;
+
+        if (sky)
+        {
+            sSpanShiftY = (int)(Reg(0x12 + bg * 4) & 511) - CTR_VIEW_Y;
+            DrawCentredSpan(bg, 0, 240, 0, sky * 8);
+            DrawCentredMargins(bg, fill, 0, sky);
+            sSpanShiftY = 0;
+        }
+        DrawCentredSpan(bg, 0, 240, sky * 8, 160);
+        DrawCentredMargins(bg, fill, sky ? sky : -64, 64);
         return true;
     }
-    if (bg == 0 && fill->bandRow && ((Reg(8) >> 2) & 3) == fill->bandChars)
+    if (bg == 0 && speech)
     {
         DrawCentredSpan(0, 0, 240, 0, fill->bandRow * 8);
         sSpanShiftX = fill->bandX;
