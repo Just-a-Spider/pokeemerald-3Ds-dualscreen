@@ -1601,6 +1601,45 @@ def ledge_berms(layout, art, h):
     return len(cells)
 
 
+def ledges_on_ground(layout, h):
+    """Lay every ledge cell back on the ground round it, before its berm.
+
+    A ledge is modelled the same everywhere: a berm on the ground, as Route
+    101 has it (flat land, the lip raised). Where a map's relief is solved,
+    the solver reads the brown lip as rock and sinks the cell up to half a
+    level, which with the berm added became a trench, toothed at every
+    lattice step - shading the grass beside it in stripes. Each ledge cell's
+    points go back to the plane of its four corners, which it shares with the
+    ground round it. A point on an edge shared with rock (a blocked cell that
+    is no ledge) is the rock's and stays as solved; one shared with walkable
+    ground or the map's edge is laid flat too, where the sinking reached.
+    """
+    def keeps(cx, cy):
+        return ((cx, cy) not in cells and not layout.off_map(cx, cy)
+                and layout.blocked(cx, cy))
+
+    cells = ledge_cells(layout)
+    P = PER_CELL
+    for (x, y) in cells:
+        x0, y0 = x * P, y * P
+        c00, c10 = h[y0][x0], h[y0][x0 + P]
+        c01, c11 = h[y0 + P][x0], h[y0 + P][x0 + P]
+        for j in range(P + 1):
+            for i in range(P + 1):
+                if i in (0, P) and j in (0, P):
+                    continue  # the corners are the ground's
+                sides = []
+                if i == 0: sides.append((x - 1, y))
+                if i == P: sides.append((x + 1, y))
+                if j == 0: sides.append((x, y - 1))
+                if j == P: sides.append((x, y + 1))
+                if any(keeps(*s) for s in sides):
+                    continue
+                t, s = i / float(P), j / float(P)
+                h[y0 + j][x0 + i] = ((c00 * (1 - t) + c10 * t) * (1 - s)
+                                     + (c01 * (1 - t) + c11 * t) * s)
+
+
 def flat_lattice(layout):
     return [[0.0] * (layout.w * PER_CELL + 1) for _ in range(layout.h * PER_CELL + 1)]
 
@@ -1611,8 +1650,10 @@ def layout_heights(layout_id):
     group = drawn_group(layout_id)
     if group:
         h = [row[:] for row in solve_drawn(group)[layout_id]]
+        ledges_on_ground(roles_layout, h)
     elif layout_id in ENABLED:
         role, cell, h = solve(roles_layout)
+        ledges_on_ground(roles_layout, h)
     else:
         h = flat_lattice(roles_layout)
     art = _ART.get(layout_id)

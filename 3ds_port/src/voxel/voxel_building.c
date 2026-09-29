@@ -31,6 +31,7 @@
 
 #include "voxel_building.h"
 #include "voxel_file.h"
+#include "voxel_lighting.h"
 #include "voxel_relief.h"
 
 #ifndef VOXEL_BUILDINGS_PATH
@@ -445,6 +446,14 @@ bool VoxelBuildings_EmitSome(VoxelBuilder *builder, const VoxelMapInstance *inst
                 /* a patch is written a, b, c, a, c, d */
                 if (step == 6)
                     VoxelBuilder_Quad(builder, &t[0], &t[1], &t[2], &t[5]);
+#if CTR_VOXEL_LIGHTING
+                else if (builder->lighting)
+                {
+                    /* Lit by the same sun as the terrain, not by the side
+                     * the drawing was made for. */
+                    VoxelLighting_ModelTri(builder, &t[0], &t[1], &t[2], t[0].shade);
+                }
+#endif
                 else
                     VoxelBuilder_Tri(builder, &t[0], &t[1], &t[2]);
             }
