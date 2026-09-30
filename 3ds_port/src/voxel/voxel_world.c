@@ -421,12 +421,12 @@ bool VoxelWorld_UsesTreeSprites(const VoxelMapInstance *inst)
  * is asked. What is left is ground, whatever its collision bit says: guessing
  * walls, roofs and cliffs from it is what put blocks where nothing stands.
  *
- * The exceptions are small things that are not terrain: water, which sits a
- * little under the ground, and indoor furniture.
+ * The exceptions are small things that are not terrain: water, which lies
+ * flush with the ground, and indoor furniture.
  */
 /*
  * The few behaviours that say what a cell looks like, asked through the
- * game's own predicates: water sits under the ground, counters and machines
+ * game's own predicates: water lies flush with the ground, counters and machines
  * stand up. Everything else says nothing (VOXEL_SHAPE_COUNT).
  */
 static VoxelVisualShape BehaviorShape(u8 behavior)

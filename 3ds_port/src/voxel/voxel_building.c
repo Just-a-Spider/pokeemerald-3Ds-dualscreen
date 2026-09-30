@@ -31,6 +31,7 @@
 
 #include "voxel_building.h"
 #include "voxel_file.h"
+#include "voxel_grade.h"
 #include "voxel_lighting.h"
 #include "voxel_relief.h"
 
@@ -284,8 +285,12 @@ bool VoxelBuildings_ReadPage(unsigned page, unsigned first, unsigned count, uint
         /* Slices go straight into the caller's buffer, never through stdio's. */
         setvbuf(sPageFile, NULL, _IONBF, 0);
     }
-    return fseek(sPageFile, (long)(sPages[page].offset + first * sizeof(uint16_t)), SEEK_SET) == 0
-        && fread(dest, sizeof(uint16_t), count, sPageFile) == count;
+    if (fseek(sPageFile, (long)(sPages[page].offset + first * sizeof(uint16_t)), SEEK_SET) != 0
+     || fread(dest, sizeof(uint16_t), count, sPageFile) != count)
+        return false;
+    /* On the reading thread, off the render thread's frame. */
+    VoxelGrade_Texels(dest, count);
+    return true;
 }
 
 /* The placements of one layout, which the generator sorted by layout. */

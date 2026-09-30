@@ -281,15 +281,16 @@ void VoxelMesh_East(VoxelBuilder *b, float wx, float wz, float yBottom, float yT
 
 /* ── Single tiles ───────────────────────────────────────────────────────── */
 
-/* Height of the block a shape is drawn as, or 0 for a flat tile. Negative
- * recesses it. The values are the reference's. Terrain has none: what stands
- * up outdoors is modelled or read off its drawing, never raised from here. */
+/* Height of the block a shape is drawn as, or 0 for a flat tile.
+ * The values are the reference's. Terrain has none: what stands
+ * up outdoors is modelled or read off its drawing, never raised from here.
+ * Water lies flush with the ground: recessed, its rim drew a line along every
+ * shore that the art, which already draws its own bank, does not have. */
 static float ShapeHeight(VoxelVisualShape shape)
 {
     switch (shape)
     {
     case VOXEL_SHAPE_DECAL:   return 0.02f; /* rugs and mats, just off the floor */
-    case VOXEL_SHAPE_WATER:   return -0.10f;
     case VOXEL_SHAPE_COUNTER: return 0.70f;
     default:                  return 0.0f;
     }
@@ -437,60 +438,6 @@ static void EmitUpright(VoxelBuilder *builder, int x, int y,
         &(VoxelVertex){wx,        height, wz, u0, v0, SHADE_TOP});
 }
 
-/*
- * The rim of a recessed tile (water): down from the ground round it to the
- * sunken top, wherever the neighbour is not recessed with it. Without it the
- * gap showed the clear colour, a black line along every shore. Each rim wears
- * the strip of the tile's own drawing along that edge, the drawn bank folded
- * down, so it reads as the shore the artist drew.
- */
-/* What a neighbour of recessed water is drawn as: water drawn as relief (the
- * shoulder of a rock in the sea, surfed behind) stands on its lattice, not
- * recessed, so the rim is wanted against it too. */
-static VoxelVisualShape RimNeighbour(int x, int y)
-{
-    VoxelVisualShape shape = VoxelMesh_Classify(x, y);
-
-    if (shape == VOXEL_SHAPE_WATER
-     && VoxelRelief_Cell(VoxelWorld_GetInstanceAt(x, y), x, y) != NULL)
-        return VOXEL_SHAPE_FLAT;
-    return shape;
-}
-
-static void EmitRim(VoxelBuilder *b, int x, int y, VoxelVisualShape shape, float h,
-                    float u0, float v0, float u1, float v1)
-{
-    float wx = (float)x, wz = (float)y;
-    float du = (u1 - u0) * -h, dv = (v1 - v0) * -h;
-    VoxelVisualShape n = RimNeighbour(x, y - 1), s = RimNeighbour(x, y + 1);
-    VoxelVisualShape w = RimNeighbour(x - 1, y), e = RimNeighbour(x + 1, y);
-
-    if (n != shape && n != VOXEL_SHAPE_VOID) /* faces south, at the north edge */
-        VoxelBuilder_Quad(b,
-            &(VoxelVertex){wx,        h,    wz, u0, v0,      SHADE_SOUTH},
-            &(VoxelVertex){wx + 1.0f, h,    wz, u1, v0,      SHADE_SOUTH},
-            &(VoxelVertex){wx + 1.0f, 0.0f, wz, u1, v0 + dv, SHADE_SOUTH},
-            &(VoxelVertex){wx,        0.0f, wz, u0, v0 + dv, SHADE_SOUTH});
-    if (s != shape && s != VOXEL_SHAPE_VOID) /* faces north, at the south edge */
-        VoxelBuilder_Quad(b,
-            &(VoxelVertex){wx + 1.0f, h,    wz + 1.0f, u1, v1,      SHADE_NORTH},
-            &(VoxelVertex){wx,        h,    wz + 1.0f, u0, v1,      SHADE_NORTH},
-            &(VoxelVertex){wx,        0.0f, wz + 1.0f, u0, v1 - dv, SHADE_NORTH},
-            &(VoxelVertex){wx + 1.0f, 0.0f, wz + 1.0f, u1, v1 - dv, SHADE_NORTH});
-    if (w != shape && w != VOXEL_SHAPE_VOID) /* faces east, at the west edge */
-        VoxelBuilder_Quad(b,
-            &(VoxelVertex){wx, h,    wz + 1.0f, u0,      v1, SHADE_EAST},
-            &(VoxelVertex){wx, h,    wz,        u0,      v0, SHADE_EAST},
-            &(VoxelVertex){wx, 0.0f, wz,        u0 + du, v0, SHADE_EAST},
-            &(VoxelVertex){wx, 0.0f, wz + 1.0f, u0 + du, v1, SHADE_EAST});
-    if (e != shape && e != VOXEL_SHAPE_VOID) /* faces west, at the east edge */
-        VoxelBuilder_Quad(b,
-            &(VoxelVertex){wx + 1.0f, h,    wz,        u1,      v0, SHADE_WEST},
-            &(VoxelVertex){wx + 1.0f, h,    wz + 1.0f, u1,      v1, SHADE_WEST},
-            &(VoxelVertex){wx + 1.0f, 0.0f, wz + 1.0f, u1 - du, v1, SHADE_WEST},
-            &(VoxelVertex){wx + 1.0f, 0.0f, wz,        u1 - du, v0, SHADE_WEST});
-}
-
 static void EmitTile(VoxelBuilder *builder, int x, int y, VoxelVisualShape shape)
 {
     float wx = (float)x, wz = (float)y;
@@ -515,11 +462,6 @@ static void EmitTile(VoxelBuilder *builder, int x, int y, VoxelVisualShape shape
     }
 
     VoxelMesh_Top(builder, wx, wz, h, 0.0f, u0, v0, u1, v1, SHADE_TOP);
-    if (h < 0.0f)
-    {
-        EmitRim(builder, x, y, shape, h, u0, v0, u1, v1);
-        return;
-    }
     if (h == 0.0f)
         return;
 

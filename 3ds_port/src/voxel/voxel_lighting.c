@@ -662,9 +662,9 @@ static bool Receiver(int x, int z, float *height)
         return false;
     switch (VoxelWorld_ClassifyTile(x, z))
     {
-    case VOXEL_SHAPE_FLAT: *height = 0.0f; return true;
+    case VOXEL_SHAPE_FLAT:
+    case VOXEL_SHAPE_WATER: *height = 0.0f; return true;
     case VOXEL_SHAPE_DECAL: *height = 0.02f; return true;
-    case VOXEL_SHAPE_WATER: *height = -0.10f; return true;
     default: return false;
     }
 }

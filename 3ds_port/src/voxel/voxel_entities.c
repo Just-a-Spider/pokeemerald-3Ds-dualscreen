@@ -18,6 +18,7 @@
 
 #include "3ds_video.h"
 #include "voxel_entities.h"
+#include "voxel_grade.h"
 #include "voxel_relief.h"
 #include "voxel_world.h"
 #include "voxel_lighting.h"
@@ -239,7 +240,7 @@ static void DecodeSlot(VoxelSpriteSlot *slot, unsigned index, uint16_t *atlas)
                     if (slot->flipY) outY = slot->height - 1 - outY;
                     atlas[CtrVideo_Texel(baseX + (unsigned)outX, baseY + (unsigned)outY,
                                          VOXEL_SPRITE_ATLAS_DIM)] =
-                        CtrVideo_RGBA5551(slot->palette[colorIdx]);
+                        VoxelGrade_RGBA5551(slot->palette[colorIdx]);
                 }
             }
         }
@@ -582,7 +583,7 @@ typedef struct
     const struct Sprite *sprite;
     unsigned slot;
     int owner;               /* object index, or -1 */
-    bool front, decal;
+    bool front, decal, tile;
 } VoxelEffectCard;
 
 static bool IsTemplate(const struct SpriteTemplate *template, unsigned first, unsigned last)
@@ -591,6 +592,15 @@ static bool IsTemplate(const struct SpriteTemplate *template, unsigned first, un
         if (template == gFieldEffectObjectTemplatePointers[i])
             return true;
     return false;
+}
+
+/* Grass that rustles where it was stepped on keeps that tile in its data
+ * (field_effect_helpers.c: sX, sY) and stays there while its object walks on:
+ * placed from the object, it floated in the object's plane, off its tile. */
+static bool IsTileEffect(const struct SpriteTemplate *template)
+{
+    return template == gFieldEffectObjectTemplatePointers[FLDEFFOBJ_TALL_GRASS]
+        || template == gFieldEffectObjectTemplatePointers[FLDEFFOBJ_LONG_GRASS];
 }
 
 static bool IsDecal(const struct SpriteTemplate *template)
@@ -824,10 +834,14 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
         effect->sprite = sprite;
         effect->slot = (unsigned)slot;
         effect->decal = IsDecal(sprite->template);
-        effect->owner = effect->decal ? -1 : EffectOwner(sprite, objects);
+        effect->tile = IsTileEffect(sprite->template);
+        effect->owner = effect->decal || effect->tile ? -1 : EffectOwner(sprite, objects);
         effect->front = effect->owner < 0 || DrawnOver(sprite, objects[effect->owner].sprite);
-        /* Behind its object and below its feet: what the object rides. */
-        if (effect->owner >= 0 && !effect->front)
+        /* Behind its object and below its feet: what the object rides. Only
+         * the surf mon is ridden; grass behind a walker's feet, as it steps
+         * onto or off a tile of it, lifted the walker a moment. */
+        if (effect->owner >= 0 && !effect->front
+         && sprite->template == gFieldEffectObjectTemplatePointers[FLDEFFOBJ_SURF_BLOB])
         {
             VoxelObjectCard *object = &objects[effect->owner];
             int base = sprite->y + sprite->centerToCornerVecY + h;
@@ -886,6 +900,29 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
         h = sSlots[effect->slot].height;
         x = sprite->x + sprite->x2;
         base = sprite->y + sprite->centerToCornerVecY + h;
+        if (effect->tile)
+        {
+            /* Lying on its own tile over the ground's drawing of it, which it
+             * animates: stood up as a card it read as a flat picture on top
+             * of the tile instead of the tile itself. */
+            float cx = (float)(sprite->data[1] - MAP_OFFSET) + 0.5f;
+            float cz = (float)(sprite->data[2] - MAP_OFFSET) + 0.5f;
+            float shade = 1.0f;
+
+            if (gPlayerAvatar.objectEventId < VOXEL_SPRITE_SLOTS
+             && objects[gPlayerAvatar.objectEventId].drawn)
+                shade = objects[gPlayerAvatar.objectEventId].shade;
+
+            if (VoxelWorld_InstanceCount() > 0)
+            {
+                cx += (float)VoxelWorld_Instance(0)->originX;
+                cz += (float)VoxelWorld_Instance(0)->originY;
+            }
+            if (fabsf(cx - camera->targetX) > 24.0f || fabsf(cz - camera->targetZ) > 24.0f)
+                continue;
+            EmitDecal(builder, &sSlots[effect->slot], effect->slot, cx, cz, shade);
+            continue;
+        }
         if (effect->owner >= 0)
         {
             const VoxelObjectCard *object = &objects[effect->owner];
