@@ -6770,7 +6770,7 @@ index 665cccec3cbc145722424b75b73a4c526b565b25..4b30068f3c040de95e69248691d10088
      if (regionMapSectionId >= KANTO_MAPSEC_START)
      {
 diff --git a/src/match_call.c b/src/match_call.c
-index 41188f51bbc5fd25e401b58c86c95b538a5b5750..e6a141a1bc7fb49d405d0a04a1b50921b263130c 100644
+index 41188f51bbc5fd25e401b58c86c95b538a5b5750..a007a34b8503f45c113899449fedd5f9e99b0756 100644
 --- a/src/match_call.c
 +++ b/src/match_call.c
 @@ -134,7 +134,7 @@ static u32 GetCurrentTotalMinutes(struct Time *);
@@ -6782,7 +6782,35 @@ index 41188f51bbc5fd25e401b58c86c95b538a5b5750..e6a141a1bc7fb49d405d0a04a1b50921
  static bool32 TrainerIsEligibleForRematch(int);
  static void StartMatchCall(void);
  static void ExecuteMatchCall(u8);
-@@ -1463,7 +1463,7 @@ static bool32 TrainerIsEligibleForRematch(int matchCallId)
+@@ -1237,11 +1237,27 @@ static const struct WindowTemplate sMatchCallTextWindow =
+     .width = 28,
+     .height = 4,
+     .paletteNum = 15,
++#ifdef PLATFORM_3DS
++    .baseBlock = 0x008
++#else
+     .baseBlock = 0x200
++#endif
+ };
+ 
++#ifdef PLATFORM_3DS
++// BG0's tiles start at charblock 2 (0x8000), and on 3DS the widened 64-column
++// field tilemaps start at screenblock 25 (0xC800 = BG0 tile 0x240). The GBA
++// layout (window 0x200, border 0x270, 128 icon tiles from 0x279, up to 0x2F8)
++// overwrote the BG1 and BG2 maps for the whole call. The call uses the start
++// menu's tiles instead (0x008-0x0FF): the start menu cannot be open during a
++// call, and this leaves the message box (0x194), its frames (0x200) and the
++// map name popup (0x107, frame 0x21D) untouched.
++#define TILE_MC_WINDOW    0x078
++#define TILE_POKENAV_ICON 0x080
++#else
+ #define TILE_MC_WINDOW    0x270
+ #define TILE_POKENAV_ICON 0x279
++#endif
+ 
+ static bool32 MatchCall_LoadGfx(u8 taskId)
+ {
+@@ -1463,7 +1479,7 @@ static bool32 TrainerIsEligibleForRematch(int matchCallId)
      return gSaveBlock1Ptr->trainerRematches[matchCallId] > 0;
  }
  
