@@ -180,6 +180,16 @@ void CtrCentredPokenav_SetVBlankCallback(IntrCallback callback)
     SetCentredCallback(callback, CTR_CENTRED_POKENAV);
 }
 
+void CtrCentredStorage_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_STORAGE);
+}
+
+void CtrCentredSummary_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, CTR_CENTRED_SUMMARY);
+}
+
 void CtrBattle_SetVBlankCallback(IntrCallback callback)
 {
     RememberCallback(&sBattle, callback, 0);

@@ -1497,6 +1497,9 @@ typedef struct
     bool across;
     /* Instead of layers: the visible background drawn behind the others. */
     bool backmost;
+    /* The layers' margins read on through the tilemap, as the GBA wraps it,
+     * instead of repeating the picture's edge row and column. */
+    bool wrap;
     uint8_t skyRows, bandRow, bandChars;
     int8_t bandX, bandY;
 } CentredFill;
@@ -1511,6 +1514,9 @@ static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
     /* Whatever background is at the back of the PokéNav screen on show
      * (CentredLayers): the dots, the Hoenn sea, the ribbons' wood. */
     [CTR_CENTRED_POKENAV] = {.backmost = true},
+    /* The PC's scrolling pattern, which the GBA wraps round its 32x32 map. */
+    [CTR_CENTRED_STORAGE] = {.layers = 1u << 3, .wrap = true},
+    [CTR_CENTRED_SUMMARY] = {0},
 };
 
 int CtrPokenavList_Bg(void);
@@ -1558,7 +1564,7 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
     unsigned chars = ((control >> 2) & 3) * 0x4000;
     bool color256 = (control & 128) != 0;
     unsigned scrollX = Reg(0x10 + bg * 4) & 511, scrollY = Reg(0x12 + bg * 4) & 511;
-    unsigned mask = (size & 1) ? 63u : 31u;
+    unsigned mask = (size & 1) ? 63u : 31u, rows = (size & 2) ? 63u : 31u;
     int ox = (int)(scrollX & 7), oy = (int)(scrollY & 7);
 
     ViewBase();
@@ -1566,7 +1572,8 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
     for (int w = from; w < to && w * 8 - oy + sSpanShiftY < sClipY1; ++w)
     {
         bool beside = w >= 0 && w < 20;
-        unsigned row = w < 0 ? (unsigned)fill->inset[1] : w >= 20 ? 19u - (unsigned)fill->inset[3]
+        unsigned row = fill->wrap ? (unsigned)(w + (int)(scrollY >> 3)) & rows
+                     : w < 0 ? (unsigned)fill->inset[1] : w >= 20 ? 19u - (unsigned)fill->inset[3]
                      : (unsigned)(w + (int)(scrollY >> 3));
         unsigned rowBase;
 
@@ -1579,7 +1586,8 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
             int slot;
 
             if (inside && beside) continue;
-            column = v < 0 ? (unsigned)fill->inset[0] : v >= 30 ? 29u - (unsigned)fill->inset[2]
+            column = fill->wrap ? ((unsigned)v + (scrollX >> 3)) & mask
+                   : v < 0 ? (unsigned)fill->inset[0] : v >= 30 ? 29u - (unsigned)fill->inset[2]
                    : ((unsigned)v + (scrollX >> 3)) & mask;
             entry = Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
             address = chars + (entry & 1023) * (color256 ? 64 : 32);
@@ -3302,15 +3310,17 @@ static void RenderBattleScene(uint32_t clear)
 }
 
 /*
- * The PokéNav's surface on the bottom screen: 240x240, the area left of the
- * button column. It is not linked to the screen, since a linked target is
- * copied over the whole of it and would cover the column the bottom screen
- * draws itself; after the frame it is copied into the first 240 columns of
+ * The bottom screen's surface, the whole 320x240 screen. The PokéNav uses
+ * the 240x240 area left of the button column; the PC's boxes all of it. It
+ * is not linked to the screen, since a linked target is copied over the
+ * whole of it and would cover the column the bottom screen draws itself;
+ * after the frame the PokéNav's part is copied into the first 240 columns of
  * the framebuffer, which are exactly that area (the framebuffer runs column
- * by column from the left edge). Made when the PokéNav opens, given back a
- * few seconds after it closes.
+ * by column from the left edge), and the boxes' into all of it. Made when
+ * one of them opens, given back a few seconds after it closes.
  */
 #define BOTTOM_SIZE 240
+#define BOTTOM_WIDTH 320
 static C3D_RenderTarget *sBottom;
 static uint32_t sBottomUsed, sBottomFailFrame;
 static bool sBottomFailed;
@@ -3337,10 +3347,10 @@ static bool BottomReady(bool wanted)
     sBottomUsed = sStats.frames;
     if (sBottom) return true;
     if (sBottomFailed && sStats.frames - sBottomFailFrame < LAYER_RETRY_FRAMES) return false;
-    sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_SIZE, GPU_RB_RGB565, -1);
+    sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_WIDTH, GPU_RB_RGB565, -1);
 #if CTR_VOXEL_ENABLED
     if (!sBottom && CtrVoxel_ReleaseIdleVram() > 0)
-        sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_SIZE, GPU_RB_RGB565, -1);
+        sBottom = C3D_RenderTargetCreate(BOTTOM_SIZE, BOTTOM_WIDTH, GPU_RB_RGB565, -1);
 #endif
     if (!sBottom)
     {
@@ -3360,14 +3370,24 @@ static bool sBottomInUse;
 
 bool CtrVideo_BottomInUse(void) { return sBottomInUse; }
 
+/* The screens drawn over the whole bottom screen, rather than left of the column. */
+static bool BottomWhole(unsigned screen)
+{
+    return screen == CTR_CENTRED_STORAGE || screen == CTR_CENTRED_SUMMARY;
+}
+
+bool CtrVideo_BottomWhole(void) { return sBottomInUse && BottomWhole(sCentredScreen); }
+
 /* After the frame: the composed picture into the bottom screen's framebuffer. */
 static void BottomTransfer(void)
 {
     u32 *fb = (u32 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 
+    unsigned columns = BottomWhole(sCentredScreen) ? BOTTOM_WIDTH : BOTTOM_SIZE;
+
     if (!sBottom || !fb || gfxGetScreenFormat(GFX_BOTTOM) != GSP_RGB565_OES) return;
-    C3D_SyncDisplayTransfer((u32 *)sBottom->frameBuf.colorBuf, GX_BUFFER_DIM(BOTTOM_SIZE, BOTTOM_SIZE),
-                            fb, GX_BUFFER_DIM(BOTTOM_SIZE, BOTTOM_SIZE),
+    C3D_SyncDisplayTransfer((u32 *)sBottom->frameBuf.colorBuf, GX_BUFFER_DIM(BOTTOM_SIZE, columns),
+                            fb, GX_BUFFER_DIM(BOTTOM_SIZE, columns),
                             GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0)
                             | GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565)
                             | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565)
@@ -3414,6 +3434,42 @@ static void NavCompose(void)
     ClipToView();
 }
 
+/*
+ * The PC's boxes (and a summary) on the bottom screen: the GBA picture 1:1 in
+ * the middle of the whole screen. Around it only the boxes' scrolling pattern
+ * at the back goes on, the summary has its backdrop; everything else, sprites
+ * included, is cut at the picture's edges, where the GBA screen ends and
+ * parks what it hides.
+ */
+#define STORAGE_MARGIN_X ((BOTTOM_WIDTH - 240) / 2)
+
+static void StorageComposePart(int left, int right, int top, int bottom, unsigned exclude)
+{
+    ClipToView();
+    sClipX0 = left;
+    sClipX1 = right;
+    sClipY0 = top;
+    sClipY1 = bottom;
+    sLayerExclude = exclude;
+    C2D_Flush();
+    sScissored = true;
+    RestoreScissor();
+    Compose();
+    C2D_Flush();
+    C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
+    sScissored = false;
+    sLayerExclude = 0;
+}
+
+static void StorageCompose(void)
+{
+    unsigned marginsOnly = 63u & ~(1u << 3);
+
+    StorageComposePart(-STORAGE_MARGIN_X, 240 + STORAGE_MARGIN_X, -CTR_STAGE_Y, 160 + CTR_STAGE_Y, marginsOnly);
+    StorageComposePart(0, 240, 0, 160, 0);
+    ClipToView();
+}
+
 int CtrVideo_BottomPictureY(int y)
 {
     for (unsigned b = 0; b < sNavBandCount; ++b)
@@ -3447,8 +3503,9 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
     if (scene) sLayerExclude = 63 & ~(1u | 32u);
     if (!(Reg(0) & 128))
     {
-        if (target == sBottom) NavCompose();
-        else Compose();
+        if (target != sBottom) Compose();
+        else if (BottomWhole(sCentredScreen)) StorageCompose();
+        else NavCompose();
     }
     sLayerExclude = 0;
     C2D_Flush();
@@ -3460,13 +3517,15 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
     C2D_SceneBegin(target);
     if (target == sBottom)
     {
-        /* The middle 240 columns of the logical frame: the picture and the
-         * margins above and below it. Tilted as a screen target is. */
-        const Tex3DS_SubTexture middle = {BOTTOM_SIZE, BOTTOM_SIZE,
-            (CTR_GAME_WIDTH - BOTTOM_SIZE) / 2 / 512.0f, 1,
-            (CTR_GAME_WIDTH + BOTTOM_SIZE) / 2 / 512.0f, 1 - BOTTOM_SIZE / 256.0f};
+        /* The middle 240 columns of the logical frame, or 320 for the boxes:
+         * the picture and the margins around it. Tilted as a screen target is. */
+        int width = BottomWhole(sCentredScreen) ? BOTTOM_WIDTH : BOTTOM_SIZE;
+        const Tex3DS_SubTexture middle = {(u16)width, BOTTOM_SIZE,
+            (CTR_GAME_WIDTH - width) / 2 / 512.0f, 1,
+            (CTR_GAME_WIDTH + width) / 2 / 512.0f, 1 - BOTTOM_SIZE / 256.0f};
 
-        C2D_SceneSize(BOTTOM_SIZE, BOTTOM_SIZE, true);
+        /* The framebuffer's own measures, as for a screen target. */
+        C2D_SceneSize(BOTTOM_SIZE, BOTTOM_WIDTH, true);
         C2D_ViewReset();
         Blend(5, false, false);
         C2D_DrawImageAt((C2D_Image){&sSurface, &middle}, 0, 0, 0, NULL, 1, 1);
@@ -4541,8 +4600,10 @@ void CtrVideo_HoldTop(bool hold)
 void CtrVideo_Present(void)
 {
     if (!sMemory.regs) CtrPlatform_Fatal("VIDEO has no logical memory bound");
-    /* The PokéNav is drawn on the bottom screen, whether or not the top is held. */
-    bool bottom = BottomReady(sCentredRequested == CTR_CENTRED_POKENAV && !sStageRequested);
+    /* The PokéNav and the PC's boxes are drawn on the bottom screen, whether
+     * or not the top is held. */
+    bool bottom = BottomReady((sCentredRequested == CTR_CENTRED_POKENAV || BottomWhole(sCentredRequested))
+                              && !sStageRequested);
     sBottomInUse = bottom;
     if (sHoldTop && !bottom)
     {

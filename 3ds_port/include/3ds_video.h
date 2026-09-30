@@ -87,6 +87,14 @@ enum
      * The top screen keeps the frame it last showed meanwhile.
      */
     CTR_CENTRED_POKENAV,
+    /*
+     * The PC's boxes, also on the bottom screen: the GBA screen 1:1 in the
+     * middle of the 240x240 area, its scrolling background carried on above
+     * and below it.
+     */
+    CTR_CENTRED_STORAGE,
+    /* A Pokémon's summary, on the bottom screen the same way. */
+    CTR_CENTRED_SUMMARY,
     CTR_CENTRED_SCREENS
 };
 void CtrVideo_SetCentred(unsigned screen);
@@ -99,6 +107,8 @@ void CtrVideo_SetCentred(unsigned screen);
 void CtrVideo_SetLineWindow(const uint16_t *values, unsigned lines, bool both);
 /* Whether the last frame drew the PokéNav into the bottom screen's left area. */
 bool CtrVideo_BottomInUse(void);
+/* Whether it drew the whole bottom screen: the PC's boxes or a summary. */
+bool CtrVideo_BottomWhole(void);
 /*
  * The PokéNav's line of the picture a tap on line y of the bottom screen
  * lands on: its header stays on the top edge, its help bar on the bottom

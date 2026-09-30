@@ -7,7 +7,9 @@
  * the left shows the chosen one; everything happens here while the top screen
  * keeps the world. The PokéNav is the game's own, run as it is: the
  * compositor draws its screens into that area (CtrVideo_BottomInUse) and a
- * tap on them becomes the buttons the PokéNav reads.
+ * tap on them becomes the buttons the PokéNav reads. The PC's boxes are
+ * drawn there too, and a tap on them acts in the game directly
+ * (pokemon_storage_system.c, CtrStorage_Tap).
  *
  * Map, trainer card, Pokédex, summary, save and options are drawn and run
  * here directly. Using an item, switching mons, giving items or field moves
@@ -118,6 +120,9 @@ void CtrPokenavMenu_SetCursor(int cursor);
 void CtrPokenavList_SetSelected(u16 selected);
 void CtrPokenavMatchCall_SetOption(u16 cursor);
 void CtrMonMarkings_SetCursor(s8 cursor);
+bool8 CtrStorage_IsOpen(void);
+void CtrStorage_Tap(s16 x, s16 y);
+void CtrSummary_Tap(s16 x, s16 y);
 void SetPokemonCryStereo(u32 val);
 extern const struct PokedexEntry gPokedexEntries[];
 
@@ -1021,6 +1026,8 @@ enum
     MODE_BAG_MENU,
     /* The PokéNav, drawn by the compositor left of the column. */
     MODE_POKENAV,
+    /* The PC's boxes, drawn by the compositor over the whole screen. */
+    MODE_STORAGE,
     MODE_BATTLE_INFO,
     MODE_BATTLE_ACTION,
     MODE_BATTLE_MOVE,
@@ -1336,6 +1343,9 @@ static u8 CurrentMode(void)
         return MODE_OFF;
     if (CtrPokenav_IsOpen())
         return MODE_POKENAV;
+    /* A summary opened from the boxes is on the whole screen too. */
+    if (CtrStorage_IsOpen() || CtrVideo_BottomWhole())
+        return MODE_STORAGE;
     if (FuncIsActiveTask(Task_HandleChooseMonInput))
         sPartyMenuCallback = gMain.callback2;
     if (sPartyMenuCallback && gMain.callback2 == sPartyMenuCallback)
@@ -1383,7 +1393,8 @@ static void BeginSession(bool8 battle)
  */
 static bool8 UpdateSession(u8 mode, bool8 planRunning)
 {
-    bool8 inMenu = mode == MODE_PARTY_MENU || mode == MODE_BAG_MENU || mode == MODE_POKENAV;
+    bool8 inMenu = mode == MODE_PARTY_MENU || mode == MODE_BAG_MENU || mode == MODE_POKENAV
+                || mode == MODE_STORAGE;
     bool8 home = gMain.callback2 == CB2_Overworld || gMain.callback2 == BattleMainCB2;
 
     if (inMenu && !sSession.active)
@@ -1921,6 +1932,8 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
         s->screen = SCR_BAG;
     else if (mode == MODE_POKENAV)
         s->screen = SCR_POKENAV;
+    else if (mode == MODE_STORAGE)
+        s->screen = SCR_COUNT;   /* the boxes cover the column */
     StringCopy(s->name, gSaveBlock2Ptr->playerName);
 
     switch (s->mode)
@@ -3071,8 +3084,10 @@ static void Render(const ViewState *s)
             DrawColumn(s);
     }
     DrawAnimIcons();
-    /* Left of the column is the PokéNav's while the compositor draws it. */
-    CtrBottom_Blit(sCanvas, CtrVideo_BottomInUse() ? CW : 0, W);
+    /* Left of the column is the PokéNav's while the compositor draws it, and
+     * the whole screen the boxes'. */
+    if (!CtrVideo_BottomWhole())
+        CtrBottom_Blit(sCanvas, CtrVideo_BottomInUse() ? CW : 0, W);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -4045,6 +4060,19 @@ static u8 ProcessTouch(u8 mode)
     else if (in->touchUp && sTouch.active)
     {
         sTouch.active = FALSE;
+        /* The boxes have the whole screen, their picture in the middle of it,
+         * and take the tap themselves, in pixels of that picture. */
+        if (mode == MODE_STORAGE)
+        {
+            int x = sTouch.lastX - (W - 240) / 2, y = sTouch.lastY - (H - 160) / 2;
+
+            /* Or a summary opened from them, the same way. */
+            if (!sTouch.dragged && CtrStorage_IsOpen())
+                CtrStorage_Tap(x, y);
+            else if (!sTouch.dragged)
+                CtrSummary_Tap(x, y);
+            return HIT_NONE;
+        }
         if (mode == MODE_POKENAV && sTouch.startX < CW)
         {
             if (!sTouch.dragged)
@@ -4076,6 +4104,14 @@ void CtrBottom_Init(void)
     sShown.mode = 0xFF;
     CtrLog_Write(CTR_LOG_VIDEO, "bottom screen: resources %s in %.1f ms", sRes.ready ? "ready" : "MISSING",
                  CtrPlatform_TickMs(CtrPlatform_Ticks() - start));
+}
+
+/* The PC's boxes are about to open (pokemon_storage_system.c): the top keeps
+ * the world, fade included, until the field is back. */
+void CtrBottom_KeepWorld(void)
+{
+    BeginSession(FALSE);
+    CtrVideo_HoldTop(TRUE);
 }
 
 void CtrBottom_Frame(void)
@@ -4110,7 +4146,7 @@ void CtrBottom_Frame(void)
             sSummary = -1;
         }
     }
-    if (hold && mode != MODE_POKENAV)   /* the PokéNav is on show */
+    if (hold && mode != MODE_POKENAV && mode != MODE_STORAGE)   /* those are on show */
         FastForward();
 
     /* The PokéNav's last frame stays left of the column until repainted. */
