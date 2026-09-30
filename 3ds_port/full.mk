@@ -147,28 +147,18 @@ build/root/src/pokemon_storage_system.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CEN
 build/root/src/pokemon_storage_system.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
 # The bag as the game draws it, on the bottom screen: left of the column when
 # opened from the field, over the whole screen from a battle, a shop, the PC.
-# CTR_BAG_ORIGINAL=0 brings back the bottom screen's own bag list, which runs
-# the game's bag hidden (3ds_bottom_ui.c).
-CTR_BAG_ORIGINAL ?= 1
-ifeq ($(CTR_BAG_ORIGINAL),1)
-FULLCFLAGS += -DCTR_BAG_ORIGINAL
 build/root/src/item_menu.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_BAG \
 	-include $(abspath compat/ctr_gba_centred.h)
 build/root/src/item_menu.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
-endif
 # The Pokédex as the game draws it, left of the column: its list, search,
 # entries, area, cry and size screens. pokedex.c installs their VBlank
-# callbacks. CTR_DEX_ORIGINAL=0 brings back the bottom screen's own list.
-CTR_DEX_ORIGINAL ?= 1
-ifeq ($(CTR_DEX_ORIGINAL),1)
-FULLCFLAGS += -DCTR_DEX_ORIGINAL
+# callbacks.
 CTR_GBA_DEX_OBJS := $(patsubst %,build/root/src/%.o,pokedex pokedex_area_screen pokedex_area_region_map \
 	pokedex_cry_screen)
 $(CTR_GBA_DEX_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE
 $(CTR_GBA_DEX_OBJS): $(ROOT)/include/gba/defines.h
 build/root/src/pokedex.o: FULLCFLAGS += -DCTR_CENTRED_POKEDEX -include $(abspath compat/ctr_gba_centred.h)
 build/root/src/pokedex.o: compat/ctr_gba_centred.h
-endif
 # The battle scene: one 240x160 composition whose sprites, windows, scanline
 # tables and BG pages are all laid out for the GBA screen, shown 1:1 and filled
 # out to the whole top screen by the compositor (compat/ctr_gba_battle.h).

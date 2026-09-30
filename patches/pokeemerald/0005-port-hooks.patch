@@ -4383,7 +4383,7 @@ index 169ef002a665712e92f6fec36a86ee7888067a17..a154bacf5122bbebb940f2bc4240811e
 diff --git a/src/item_menu.c b/src/item_menu.c
 old mode 100755
 new mode 100644
-index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc89124372ac00
+index 09bc25c90b99e98c0097771871daa4384159047c..130f2d6c46a4e6d6b1bb90d8d76208d6ade57864
 --- a/src/item_menu.c
 +++ b/src/item_menu.c
 @@ -24,6 +24,7 @@
@@ -4466,27 +4466,16 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      RunTasks();
      AnimateSprites();
      BuildOamBuffer();
-@@ -1159,10 +1193,18 @@ u8 GetItemListPosition(u8 pocketId)
+@@ -1159,7 +1193,7 @@ u8 GetItemListPosition(u8 pocketId)
      return gBagPosition.scrollPosition[pocketId] + gBagPosition.cursorPosition[pocketId];
  }
  
 -void DisplayItemMessage(u8 taskId, u8 fontId, const u8 *str, TaskFunc callback)
-+#ifdef PLATFORM_3DS
-+static const u8 *sCtrMessage;
-+#endif
-+
 +void DisplayItemMessage(u8 taskId, u8 fontId, const u8 *str, void (*callback)(u8 taskId))
  {
      s16 *data = gTasks[taskId].data;
  
-+#ifdef PLATFORM_3DS
-+    sCtrMessage = str;
-+#endif
-+
-     tMsgWindowId = AddItemMessageWindow(ITEMWIN_MESSAGE);
-     FillWindowPixelBuffer(tMsgWindowId, PIXEL_FILL(1));
-     DisplayMessageAndContinueTask(taskId, tMsgWindowId, 10, 13, fontId, GetPlayerTextSpeedDelay(), str, callback);
-@@ -1242,6 +1284,10 @@ static void Task_BagMenu_HandleInput(u8 taskId)
+@@ -1242,6 +1276,10 @@ static void Task_BagMenu_HandleInput(u8 taskId)
          }
  
          listPosition = ListMenu_ProcessInput(tListTaskId);
@@ -4497,7 +4486,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
          ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
          switch (listPosition)
          {
-@@ -1456,6 +1502,11 @@ static void Task_HandleSwappingItemsInput(u8 taskId)
+@@ -1456,6 +1494,11 @@ static void Task_HandleSwappingItemsInput(u8 taskId)
              ListMenuGetScrollAndRow(tListTaskId, &gBagPosition.scrollPosition[gBagPosition.pocket], &gBagPosition.cursorPosition[gBagPosition.pocket]);
              DoItemSwap(taskId);
          }
@@ -4509,7 +4498,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
          else
          {
              s32 input = ListMenu_ProcessInput(tListTaskId);
-@@ -1693,6 +1744,10 @@ static void Task_ItemContext_SingleRow(u8 taskId)
+@@ -1693,6 +1736,10 @@ static void Task_ItemContext_SingleRow(u8 taskId)
      if (MenuHelpers_ShouldWaitForLinkRecv() != TRUE)
      {
          s8 selection = Menu_ProcessInputNoWrap();
@@ -4520,7 +4509,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
          switch (selection)
          {
          case MENU_NOTHING_CHOSEN:
-@@ -1714,6 +1769,19 @@ static void Task_ItemContext_MultipleRows(u8 taskId)
+@@ -1714,6 +1761,19 @@ static void Task_ItemContext_MultipleRows(u8 taskId)
      if (MenuHelpers_ShouldWaitForLinkRecv() != TRUE)
      {
          s8 cursorPos = Menu_GetCursorPos();
@@ -4540,7 +4529,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
          if (JOY_NEW(DPAD_UP))
          {
              if (cursorPos > 0 && IsValidContextMenuPos(cursorPos - 2))
-@@ -1848,18 +1916,21 @@ static void CancelToss(u8 taskId)
+@@ -1848,18 +1908,21 @@ static void CancelToss(u8 taskId)
  static void Task_ChooseHowManyToToss(u8 taskId)
  {
      s16 *data = gTasks[taskId].data;
@@ -4565,7 +4554,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          BagMenu_RemoveWindow(ITEMWIN_QUANTITY);
-@@ -1887,7 +1958,7 @@ static void Task_RemoveItemFromBag(u8 taskId)
+@@ -1887,7 +1950,7 @@ static void Task_RemoveItemFromBag(u8 taskId)
      u16 *scrollPos = &gBagPosition.scrollPosition[gBagPosition.pocket];
      u16 *cursorPos = &gBagPosition.cursorPosition[gBagPosition.pocket];
  
@@ -4574,7 +4563,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          RemoveBagItem(gSpecialVar_ItemId, tItemCount);
-@@ -1957,7 +2028,7 @@ static void PrintItemCantBeHeld(u8 taskId)
+@@ -1957,7 +2020,7 @@ static void PrintItemCantBeHeld(u8 taskId)
  
  static void HandleErrorMessage(u8 taskId)
  {
@@ -4583,7 +4572,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          CloseItemMessage(taskId);
-@@ -2127,18 +2198,21 @@ static void InitSellHowManyInput(u8 taskId)
+@@ -2127,18 +2190,21 @@ static void InitSellHowManyInput(u8 taskId)
  static void Task_ChooseHowManyToSell(u8 taskId)
  {
      s16 *data = gTasks[taskId].data;
@@ -4608,7 +4597,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          BagMenu_PrintCursor(tListTaskId, COLORID_NORMAL);
-@@ -2180,7 +2254,7 @@ static void SellItem(u8 taskId)
+@@ -2180,7 +2246,7 @@ static void SellItem(u8 taskId)
  
  static void WaitAfterItemSell(u8 taskId)
  {
@@ -4617,7 +4606,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          RemoveMoneyWindow();
-@@ -2211,18 +2285,21 @@ static void Task_ItemContext_Deposit(u8 taskId)
+@@ -2211,18 +2277,21 @@ static void Task_ItemContext_Deposit(u8 taskId)
  static void Task_ChooseHowManyToDeposit(u8 taskId)
  {
      s16 *data = gTasks[taskId].data;
@@ -4642,7 +4631,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          PrintItemDescription(tListPosition);
-@@ -2264,7 +2341,7 @@ static void WaitDepositErrorMessage(u8 taskId)
+@@ -2264,7 +2333,7 @@ static void WaitDepositErrorMessage(u8 taskId)
  {
      s16 *data = gTasks[taskId].data;
  
@@ -4651,44 +4640,10 @@ index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc8912
      {
          PlaySE(SE_SELECT);
          PrintItemDescription(tListPosition);
-@@ -2594,3 +2671,361 @@ static void PrintTMHMMoveData(u16 itemId)
+@@ -2594,3 +2663,327 @@ static void PrintTMHMMoveData(u16 itemId)
          CopyWindowToVram(WIN_TMHM_INFO, COPYWIN_GFX);
      }
  }
-+
-+#ifdef PLATFORM_3DS
-+// The 3DS bottom screen shows the open item context menu (USE, GIVE, TOSS...)
-+// as touch buttons. Read-only: entries are chosen by pressing buttons.
-+u8 CtrBagMenu_GetActions(const u8 **names, u8 max, u8 *columns)
-+{
-+    u8 i;
-+
-+    if (gBagMenu == NULL || gBagMenu->contextMenuItemsPtr == NULL)
-+        return 0;
-+    if (gBagMenu->windowIds[ITEMWIN_1x1] == WINDOW_NONE && gBagMenu->windowIds[ITEMWIN_1x2] == WINDOW_NONE
-+     && gBagMenu->windowIds[ITEMWIN_2x2] == WINDOW_NONE && gBagMenu->windowIds[ITEMWIN_2x3] == WINDOW_NONE)
-+        return 0;
-+    // A quantity or yes/no prompt over the context menu takes the input.
-+    if (gBagMenu->windowIds[ITEMWIN_MESSAGE] != WINDOW_NONE || gBagMenu->windowIds[ITEMWIN_YESNO_LOW] != WINDOW_NONE
-+     || gBagMenu->windowIds[ITEMWIN_YESNO_HIGH] != WINDOW_NONE || gBagMenu->windowIds[ITEMWIN_QUANTITY] != WINDOW_NONE
-+     || gBagMenu->windowIds[ITEMWIN_QUANTITY_WIDE] != WINDOW_NONE)
-+        return 0;
-+    *columns = gBagMenu->contextMenuNumItems > 2 ? 2 : 1;
-+    for (i = 0; i < gBagMenu->contextMenuNumItems && i < max; i++)
-+        names[i] = sItemMenuActions[gBagMenu->contextMenuItemsPtr[i]].text;
-+    return i;
-+}
-+#endif
-+
-+#ifdef PLATFORM_3DS
-+// The bag's open message, for the 3DS bottom screen.
-+const u8 *CtrBagMenu_GetMessage(void)
-+{
-+    if (gBagMenu == NULL || gBagMenu->windowIds[ITEMWIN_MESSAGE] == WINDOW_NONE)
-+        return NULL;
-+    return sCtrMessage;
-+}
-+#endif
 +
 +#ifdef PLATFORM_3DS
 +//------------------------------------------------------------------------------
@@ -8199,7 +8154,7 @@ index 8ecf7f6e1dc7c037df41c0f7d277fbd4be55e5b7..f3d1fa446ec2efadd88ab25b78ae2ee1
      u16 scrollOffset;
  };
 diff --git a/src/pokedex.c b/src/pokedex.c
-index 96eedafad5662896c619ab5feac632fe93d257d0..14df25438c0a3b914ad7d851f86019bd0421ae04 100644
+index 96eedafad5662896c619ab5feac632fe93d257d0..4589670d93ca30d0614bf7c42cdcfc308741f540 100644
 --- a/src/pokedex.c
 +++ b/src/pokedex.c
 @@ -308,6 +308,35 @@ static void PrintSelectorArrow(u32);
@@ -8676,7 +8631,7 @@ index 96eedafad5662896c619ab5feac632fe93d257d0..14df25438c0a3b914ad7d851f86019bd
 +#ifdef PLATFORM_3DS
 +//------------------------------------------------------------------------------
 +//  3DS: the Pokédex is shown on the bottom screen, left of the button column
-+//  (CTR_DEX_ORIGINAL, full.mk). 3ds_bottom_ui.c hands it its touches in
++//  (CTR_CENTRED_POKEDEX, full.mk). 3ds_bottom_ui.c hands it its touches in
 +//  pixels of its own picture; what a tap does is what the Pokédex does for
 +//  its button, done here directly.
 +//------------------------------------------------------------------------------

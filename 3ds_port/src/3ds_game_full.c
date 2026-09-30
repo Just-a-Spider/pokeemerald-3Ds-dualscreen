@@ -205,13 +205,11 @@ IntrCallback CtrPokedex_VBlankCallback(void);
 
 void CtrCentredPokedex_SetVBlankCallback(IntrCallback callback)
 {
-#ifdef CTR_DEX_ORIGINAL
     if (callback == CtrPokedex_VBlankCallback())
     {
         SetCentredCallback(callback, CTR_CENTRED_POKEDEX);
         return;
     }
-#endif
     SetVBlankCallback(callback);
 }
 

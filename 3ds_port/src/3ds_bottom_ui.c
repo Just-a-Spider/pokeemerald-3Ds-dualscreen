@@ -9,14 +9,14 @@
  * compositor draws its screens into that area (CtrVideo_BottomInUse) and a
  * tap on them becomes the buttons the PokéNav reads. The PC's boxes are
  * drawn there too, and a tap on them acts in the game directly
- * (pokemon_storage_system.c, CtrStorage_Tap). So is the bag (CTR_BAG_ORIGINAL,
- * item_menu.c, CtrBag_Touch): BAG opens the game's own, left of the column;
- * opened from a battle, a shop or the PC it has the whole screen. And the
- * Pokédex (CTR_DEX_ORIGINAL, pokedex.c, CtrPokedex_Touch), left of the column.
+ * (pokemon_storage_system.c, CtrStorage_Tap). So is the bag (item_menu.c,
+ * CtrBag_Touch): BAG opens the game's own, left of the column; opened from a
+ * battle, a shop or the PC it has the whole screen. And the Pokédex
+ * (pokedex.c, CtrPokedex_Touch), left of the column.
  *
- * Map, trainer card, Pokédex, summary, save and options are drawn and run
- * here directly. Using an item, switching mons, giving items or field moves
- * need the game's own logic, so the game's party menu or bag runs *hidden*:
+ * Map, trainer card, summary, save and options are drawn and run here
+ * directly. Switching mons, giving items or field moves need the game's own
+ * logic, so the game's party menu runs *hidden*:
  * the top screen holds its last frame (CtrVideo_HoldTop), the menu is driven
  * by button presses fed through Platform_GetKeyInput, and what it shows (its
  * submenu entries, messages, yes/no questions) is mirrored here as buttons.
@@ -102,8 +102,6 @@
 void CB2_BagMenuRun(void);
 u8 CtrPartyMenu_GetActions(const u8 **names, u8 max);
 const u8 *CtrPartyMenu_GetMessage(void);
-u8 CtrBagMenu_GetActions(const u8 **names, u8 max, u8 *columns);
-const u8 *CtrBagMenu_GetMessage(void);
 bool8 CtrMenu_YesNoOpen(void);
 void CtrStartMenu_Request(u8 action);
 bool8 CtrStartMenu_Pending(void);
@@ -126,18 +124,14 @@ void CtrMonMarkings_SetCursor(s8 cursor);
 bool8 CtrStorage_IsOpen(void);
 void CtrStorage_Tap(s16 x, s16 y);
 void CtrSummary_Tap(s16 x, s16 y);
-#ifdef CTR_BAG_ORIGINAL
 /* item_menu.c: the bag's touches, in pixels of its picture. */
 enum { BAG_TOUCH_DOWN, BAG_TOUCH_MOVE, BAG_TOUCH_UP, BAG_TOUCH_CANCEL };
 void CtrBag_Touch(u8 phase, s16 x, s16 y);
 bool8 CtrBag_Close(void);
-#endif
-#ifdef CTR_DEX_ORIGINAL
 /* pokedex.c: the Pokédex's touches, in pixels of its picture, as the bag's. */
 bool8 CtrPokedex_IsOpen(void);
 void CtrPokedex_Touch(u8 phase, s16 x, s16 y);
 bool8 CtrPokedex_Close(bool8 leave);
-#endif
 void SetPokemonCryStereo(u32 val);
 extern const struct PokedexEntry gPokedexEntries[];
 
@@ -687,47 +681,6 @@ static void DrawItemIcon(u16 item, int x, int y)
         DrawSprite(sItemIcons[slot].tiles, 3, 3, x, y, sItemIcons[slot].pal.c);
 }
 
-/* Front pictures for the Pokédex: 64x64, two at a time. */
-static struct
-{
-    u16 species;
-    u32 age;
-    bool8 valid;
-    u8 tiles[2048];
-    Pal pal;
-} sPics[2];
-
-static int FrontPic(u16 species)
-{
-    int victim = sPics[0].age <= sPics[1].age ? 0 : 1;
-    u32 size = 0;
-    u8 *tiles;
-    u16 *pal;
-
-    for (int i = 0; i < 2; ++i)
-        if (sPics[i].species == species && species)
-        {
-            sPics[i].age = ++sIconClock;
-            return sPics[i].valid ? i : -1;
-        }
-    if (!sIconBudget || species == SPECIES_NONE || species >= NUM_SPECIES)
-        return -1;
-    sIconBudget = FALSE;
-    tiles = Unlz(gMonFrontPicTable[species].data, &size);
-    pal = Unlz(gMonPaletteTable[species].data, NULL);
-    sPics[victim].valid = tiles && pal && size >= sizeof(sPics[victim].tiles);
-    if (sPics[victim].valid)
-    {
-        memcpy(sPics[victim].tiles, tiles, sizeof(sPics[victim].tiles));
-        ToPals(&sPics[victim].pal, pal, 1);
-    }
-    free(tiles);
-    free(pal);
-    sPics[victim].species = species;
-    sPics[victim].age = ++sIconClock;
-    return sPics[victim].valid ? victim : -1;
-}
-
 /* ------------------------------------------------------------------------ */
 /* Text                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -1062,9 +1015,6 @@ enum
     PANEL_QUANTITY,   /* how many: up, down, OK, CANCEL */
 };
 
-#define BAG_ROWS 5
-#define BAG_ROW_H 24
-#define DEX_ROWS 8
 #define MAX_MENU_ITEMS 8
 
 typedef struct
@@ -1103,22 +1053,13 @@ typedef struct
     u16 heldItem;
     /* Region map. */
     u8 mapsec, cursorX, cursorY, pickMapsec, pickX, pickY;
-    /* Bag. The game's own on show (CTR_BAG_ORIGINAL): BAG_VIEW_*. */
-    u8 pocket, keyPocket, bagView;
-    s16 bagCursor;
-    u16 bagScroll, bagCount;
-    u16 items[BAG_ROWS], qty[BAG_ROWS];
-    u16 descItem;
+    /* Bag: which of the game's is on show, BAG_VIEW_*. */
+    u8 bagView;
     /* Trainer card. */
     u8 name[PLAYER_NAME_LENGTH + 1];
     u8 hasDex, stars, badges, minutes;
     u16 id, dex, hours;
     u32 money;
-    /* Pokédex. */
-    u8 national;
-    u16 dexScroll, dexCount, dexSeen, dexOwn, dexDetail;
-    u16 dexNum[DEX_ROWS];
-    u8 dexFlags[DEX_ROWS];           /* 1 seen, 2 caught */
     /* Save and options. */
     u8 saveStep, canSave;
     u8 options[OPTION_ROWS];
@@ -1129,28 +1070,18 @@ typedef struct
     u8 text[96];
 } ViewState;
 
-/* Which of the game's bag is on show (CTR_BAG_ORIGINAL). */
+/* Which of the game's bag is on show. */
 enum { BAG_VIEW_NONE, BAG_VIEW_SECTION, BAG_VIEW_WHOLE };
 
 static bool8 BagShown(u8 mode)
 {
-#ifdef CTR_BAG_ORIGINAL
     return mode == MODE_BAG_MENU;
-#else
-    (void)mode;
-    return FALSE;
-#endif
 }
 
-/* Whether the game's own screen is what the area shows (CTR_*_ORIGINAL). */
+/* Whether the game's own Pokédex is what the area shows. */
 static bool8 DexShown(u8 mode)
 {
-#ifdef CTR_DEX_ORIGINAL
     return mode == MODE_POKEDEX;
-#else
-    (void)mode;
-    return FALSE;
-#endif
 }
 
 static ViewState sState, sShown;
@@ -1160,13 +1091,9 @@ static u8 sScreen = SCR_MAP;
 static u8 sAnimFrame;
 
 /* Per screen state, kept while another screen is shown. */
-static u8 sBagPocket;
-static u16 sBagScroll;
-static s16 sBagTapped = -1;
 static s8 sPartyTapped = -1;
 static s8 sSummary = -1;
 static u8 sPickMapsec = MAPSEC_NONE, sPickX, sPickY;
-static u16 sDexScroll, sDexDetail;
 static u8 sSaveStep;
 static u8 sSaveMessage[96];
 
@@ -1194,7 +1121,6 @@ enum
     HIT_UP,
     HIT_DOWN,
     HIT_PANEL,             /* a message: anywhere on it */
-    HIT_POCKET = 0x40,     /* + pocket */
     HIT_ROW = 0x50,        /* + visible list row */
     HIT_ACTION = 0x60,     /* + action cursor */
     HIT_MOVE = 0x70,       /* + move slot */
@@ -1323,21 +1249,6 @@ static bool8 PartyMenuReady(void)
     return FuncIsActiveTask(Task_HandleChooseMonInput) && !gPaletteFade.active;
 }
 
-static bool8 BagMenuReady(void)
-{
-    if (gMain.callback2 != CB2_BagMenuRun || gBagMenu == NULL || gPaletteFade.active)
-        return FALSE;
-    for (int i = 0; i < ITEMWIN_COUNT; ++i)
-        if (gBagMenu->windowIds[i] != WINDOW_NONE)
-            return FALSE;
-    return gBagMenu->toSwapPos == 0xFF; /* NOT_SWAPPING in item_menu.c */
-}
-
-static u16 BagMenuIndex(void)
-{
-    return gBagPosition.scrollPosition[gBagPosition.pocket] + gBagPosition.cursorPosition[gBagPosition.pocket];
-}
-
 /* The player stands in the field with nothing else going on. */
 static bool8 FieldIdle(void)
 {
@@ -1384,15 +1295,11 @@ static u8 CurrentMode(void)
         return MODE_OFF;
     if (CtrPokenav_IsOpen())
         return MODE_POKENAV;
-#ifdef CTR_DEX_ORIGINAL
     if (CtrPokedex_IsOpen())
         return MODE_POKEDEX;
-#endif
-#ifdef CTR_BAG_ORIGINAL
     /* Before the boxes: the bag can be opened from them, whole screen too. */
     if (gMain.callback2 == CB2_BagMenuRun && gBagMenu)
         return MODE_BAG_MENU;
-#endif
     /* A summary opened from the boxes is on the whole screen too. */
     if (CtrStorage_IsOpen() || CtrVideo_BottomWhole())
         return MODE_STORAGE;
@@ -1400,8 +1307,6 @@ static u8 CurrentMode(void)
         sPartyMenuCallback = gMain.callback2;
     if (sPartyMenuCallback && gMain.callback2 == sPartyMenuCallback)
         return MODE_PARTY_MENU;
-    if (gMain.callback2 == CB2_BagMenuRun && gBagMenu)
-        return MODE_BAG_MENU;
     if (gMain.inBattle)
     {
         if (gMain.callback2 == BattleMainCB2 && !gPaletteFade.active)
@@ -1416,7 +1321,7 @@ static u8 CurrentMode(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Hidden sessions: the game's party menu or bag running under the world    */
+/* Hidden sessions: the game's menus running under the world              */
 /* ------------------------------------------------------------------------ */
 
 static struct
@@ -1754,41 +1659,6 @@ static u8 PlayerRegionPosition(u8 *outX, u8 *outY)
     return mapsec;
 }
 
-static u16 PocketCount(u8 pocket)
-{
-    u16 n = 0;
-
-    for (u16 i = 0; i < gBagPockets[pocket].capacity; ++i)
-        if (gBagPockets[pocket].itemSlots[i].itemId != ITEM_NONE)
-            n = i + 1;
-    return n;
-}
-
-static void SnapshotBag(ViewState *s)
-{
-    u16 count = PocketCount(sBagPocket);
-
-    if (sBagScroll + BAG_ROWS > count)
-        sBagScroll = count > BAG_ROWS ? count - BAG_ROWS : 0;
-    if (sBagTapped >= count)
-        sBagTapped = -1;
-    s->pocket = sBagPocket;
-    s->keyPocket = sBagPocket == KEYITEMS_POCKET;
-    s->bagCount = count;
-    s->bagScroll = sBagScroll;
-    s->bagCursor = sBagTapped;
-    for (int r = 0; r < BAG_ROWS; ++r)
-    {
-        u16 i = sBagScroll + r;
-        if (i >= count)
-            break;
-        s->items[r] = BagGetItemIdByPocketPosition(sBagPocket + 1, i);
-        s->qty[r] = BagGetQuantityByPocketPosition(sBagPocket + 1, i);
-    }
-    if (sBagTapped >= 0)
-        s->descItem = BagGetItemIdByPocketPosition(sBagPocket + 1, sBagTapped);
-}
-
 static void SnapshotCard(ViewState *s)
 {
     static u16 dex, frames;
@@ -1814,48 +1684,6 @@ static void SnapshotCard(ViewState *s)
     for (int i = 0; i < NUM_BADGES; ++i)
         if (FlagGet(FLAG_BADGE01_GET + i))
             s->badges |= 1 << i;
-}
-
-/* The dex in the game's order: Hoenn numbers until the National Dex. */
-static u16 DexNational(u16 index, bool8 national)
-{
-    return national ? index + 1 : HoennToNationalOrder(index + 1);
-}
-
-static void SnapshotDex(ViewState *s)
-{
-    static u16 seen, own, count, frames;
-    static bool8 national;
-
-    /* Walking the whole dex: only every half second. */
-    if ((frames++ % 30) == 0)
-    {
-        u16 total;
-        national = IsNationalPokedexEnabled();
-        total = national ? NATIONAL_DEX_COUNT : HOENN_DEX_COUNT;
-        seen = national ? GetNationalPokedexCount(FLAG_GET_SEEN) : GetHoennPokedexCount(FLAG_GET_SEEN);
-        own = national ? GetNationalPokedexCount(FLAG_GET_CAUGHT) : GetHoennPokedexCount(FLAG_GET_CAUGHT);
-        /* The list ends at the last mon seen, as the game's does. */
-        count = 0;
-        for (u16 i = 0; i < total; ++i)
-            if (GetSetPokedexFlag(DexNational(i, national), FLAG_GET_SEEN))
-                count = i + 1;
-    }
-    s->national = national;
-    s->dexSeen = seen;
-    s->dexOwn = own;
-    s->dexCount = count;
-    if (sDexScroll + DEX_ROWS > count)
-        sDexScroll = count > DEX_ROWS ? count - DEX_ROWS : 0;
-    s->dexScroll = sDexScroll;
-    for (int r = 0; r < DEX_ROWS && sDexScroll + r < count; ++r)
-    {
-        u16 num = DexNational(sDexScroll + r, national);
-        s->dexNum[r] = num;
-        s->dexFlags[r] = (GetSetPokedexFlag(num, FLAG_GET_SEEN) ? 1 : 0)
-                       | (GetSetPokedexFlag(num, FLAG_GET_CAUGHT) ? 2 : 0);
-    }
-    s->dexDetail = sDexDetail;
 }
 
 static void SnapshotBattler(BattlerView *v, u8 battler)
@@ -1939,28 +1767,6 @@ static void SnapshotPartyPanel(ViewState *s)
     CopyText(s->text, sizeof(s->text), s->message);
 }
 
-/* What the hidden bag is asking. */
-static void SnapshotBagPanel(ViewState *s)
-{
-    s->menuCount = CtrBagMenu_GetActions(s->menuNames, MAX_MENU_ITEMS, &s->menuCols);
-    s->message = CtrBagMenu_GetMessage();
-    if (CtrMenu_YesNoOpen())
-        s->panel = PANEL_YESNO;
-    else if (gBagMenu->windowIds[ITEMWIN_QUANTITY] != WINDOW_NONE
-          || gBagMenu->windowIds[ITEMWIN_QUANTITY_WIDE] != WINDOW_NONE)
-        s->panel = PANEL_QUANTITY;
-    else if (s->menuCount)
-    {
-        s->panel = PANEL_ACTIONS;
-        s->menuCursor = Menu_GetCursorPos();
-    }
-    else if (s->message)
-        s->panel = PANEL_MESSAGE;
-    else if (BagMenuReady())
-        s->panel = PANEL_HINT;
-    CopyText(s->text, sizeof(s->text), s->message);
-}
-
 static void Snapshot(ViewState *s, u8 mode, u8 pressed)
 {
     memset(s, 0, sizeof(*s));
@@ -1981,13 +1787,11 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     else if (mode == MODE_BAG_MENU)
     {
         s->screen = SCR_BAG;
-#ifdef CTR_BAG_ORIGINAL
         /* The bag from the field is left of the column; from anything else
          * it covers the column. */
         s->bagView = gBagPosition.location == ITEMMENULOCATION_FIELD ? BAG_VIEW_SECTION : BAG_VIEW_WHOLE;
         if (s->bagView == BAG_VIEW_WHOLE)
             s->screen = SCR_COUNT;
-#endif
     }
     else if (mode == MODE_POKENAV)
         s->screen = SCR_POKENAV;
@@ -2018,21 +1822,8 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
             else if (mode == MODE_PARTY_MENU)
                 SnapshotPartyPanel(s);
             break;
-        case SCR_BAG:
-#ifdef CTR_BAG_ORIGINAL
-            if (s->bagView)
-                break;
-#endif
-            SnapshotBag(s);
-            if (mode == MODE_BAG_MENU)
-                SnapshotBagPanel(s);
-            break;
         case SCR_CARD:
             SnapshotCard(s);
-            break;
-        case SCR_POKEDEX:
-            if (mode != MODE_POKEDEX)
-                SnapshotDex(s);
             break;
         case SCR_SAVE:
             s->saveStep = sSaveStep;
@@ -2091,13 +1882,8 @@ static bool8 Prefetch(const ViewState *s)
     for (int i = 0; i < MAX_BATTLERS_COUNT && sIconBudget; ++i)
         if (s->battlers[i].present)
             MonIcon(s->battlers[i].iconSpecies, s->battlers[i].deoxys);
-    for (int r = 0; r < BAG_ROWS && sIconBudget; ++r)
-        if (s->items[r] != ITEM_NONE)
-            ItemIcon(s->items[r]);
     if (sIconBudget && s->summary >= 0 && s->heldItem)
         ItemIcon(s->heldItem);
-    if (sIconBudget && s->screen == SCR_POKEDEX && s->dexDetail)
-        FrontPic(NationalPokedexNumToSpecies(s->dexDetail));
     if (sIconBudget && s->mode == MODE_BATTLE_ACTION)
         ItemIcon(ITEM_ESCAPE_ROPE);
     if (sIconBudget)
@@ -2617,165 +2403,6 @@ static void DrawTrainerCard(const ViewState *s)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Drawing: bag                                                             */
-/* ------------------------------------------------------------------------ */
-
-#define BAG_LIST_Y 24
-#define BAG_LIST_ROWS_Y (BAG_LIST_Y + 8)
-#define BAG_PANEL_Y 160
-
-static void DrawScrollArrows(int x, int top, int bottom, bool8 canUp, bool8 canDown, u8 pressed)
-{
-    static const u8 up[] = {CHAR_UP_ARROW, EOS}, down[] = {CHAR_DOWN_ARROW, EOS};
-    int half = ((bottom - top) / 8 - 1) / 2;
-
-    DrawBoxEx(BOX_MENU, x, top, 4, half, pressed == HIT_UP);
-    DrawBoxEx(BOX_MENU, x, bottom - half * 8, 4, half, pressed == HIT_DOWN);
-    DrawStrCentered(&sNormal, up, x + 16, top + half * 4 - 8, canUp ? LABEL_FG(pressed == HIT_UP) : TXT_LIGHT,
-                    TXT_LIGHT);
-    DrawStrCentered(&sNormal, down, x + 16, bottom - half * 4 - 8,
-                    canDown ? LABEL_FG(pressed == HIT_DOWN) : TXT_LIGHT, TXT_LIGHT);
-    AddHit(x, top, 32, half * 8, HIT_UP);
-    AddHit(x, bottom - half * 8, 32, half * 8, HIT_DOWN);
-}
-
-static void DrawBag(const ViewState *s)
-{
-    /* Pocket tabs, the bag's own pocket names. */
-    for (int p = 0; p < POCKETS_COUNT; ++p)
-    {
-        bool8 on = p == s->pocket || s->pressed == HIT_POCKET + p;
-        DrawBoxEx(BOX_MENU, p * 48, 0, 6, 3, on);
-        DrawStrCentered(&sSmall, gPocketNamesStringsTable[p], p * 48 + 24, 6, LABEL_FG(on), LABEL_SH(on));
-        AddHit(p * 48, 0, 48, 24, HIT_POCKET + p);
-    }
-
-    /* The list. */
-    DrawBox(BOX_MENU, 0, BAG_LIST_Y, 26, 17);
-    for (int r = 0; r < BAG_ROWS; ++r)
-    {
-        u16 index = s->bagScroll + r;
-        int y = BAG_LIST_ROWS_Y + r * BAG_ROW_H;
-        u16 item = s->items[r];
-
-        if (index >= s->bagCount)
-            break;
-        if ((s->bagCursor >= 0 && index == (u16)s->bagCursor) || s->pressed == HIT_ROW + r)
-            FillRect(8, y, 192, BAG_ROW_H, TXT_LIGHT);
-        if (item == ITEM_NONE)
-            continue;
-        DrawItemIcon(item, 10, y);
-        DrawStr(&sNormal, GetItemName(item), 38, y + 4, TXT_DARK, TXT_WHITE);
-        if (!s->keyPocket)
-        {
-            u8 text[8];
-            text[0] = CHAR_x;
-            StringCopy(text + 1, Number(s->qty[r], 3, STR_CONV_MODE_LEFT_ALIGN));
-            DrawStrRight(&sNormal, text, 196, y + 4, TXT_DARK, TXT_WHITE);
-        }
-        AddHit(8, y, 192, BAG_ROW_H, HIT_ROW + r);
-    }
-    if (s->bagCount == 0)
-        DrawStrCentered(&sNormal, Ascii("-"), 104, BAG_LIST_ROWS_Y + 52, TXT_LIGHT, TXT_WHITE);
-    DrawScrollArrows(208, BAG_LIST_Y, BAG_PANEL_Y, s->bagScroll > 0, s->bagScroll + BAG_ROWS < s->bagCount,
-                     s->pressed);
-
-    /* The lower panel: the hidden bag's questions, or the description. */
-    if (s->panel == PANEL_NONE || s->panel == PANEL_HINT)
-    {
-        DrawBox(BOX_MESSAGE, 0, BAG_PANEL_Y, CW / 8, (H - BAG_PANEL_Y) / 8);
-        if (s->descItem != ITEM_NONE)
-            DrawStr(&sSmall, GetItemDescription(s->descItem), 18, BAG_PANEL_Y + 10, TXT_WHITE, TXT_DARK);
-        if (s->panel == PANEL_HINT)
-            DrawLabelButton(152, BAG_PANEL_Y + 44, 11, 4, gText_Cancel2, s->pressed == HIT_CANCEL, TRUE, HIT_CANCEL);
-    }
-    else
-        DrawPanel(s, BAG_PANEL_Y, NULL);
-}
-
-/* ------------------------------------------------------------------------ */
-/* Drawing: Pokédex                                                         */
-/* ------------------------------------------------------------------------ */
-
-static void DrawDex(const ViewState *s)
-{
-    u8 text[24];
-
-    if (s->dexDetail)
-    {
-        u16 species = NationalPokedexNumToSpecies(s->dexDetail);
-        const struct PokedexEntry *entry = &gPokedexEntries[s->dexDetail];
-        bool8 caught = GetSetPokedexFlag(s->dexDetail, FLAG_GET_CAUGHT);
-        int pic = FrontPic(species);
-
-        DrawBox(BOX_MENU, 0, 0, 30, 12);
-        if (pic >= 0)
-            DrawSprite(sPics[pic].tiles, 8, 8, 12, 16, sPics[pic].pal.c);
-        StringCopy(text, Ascii("No."));
-        StringAppend(text, Number(s->national ? s->dexDetail : NationalToHoennOrder(s->dexDetail), 3,
-                                  STR_CONV_MODE_LEADING_ZEROS));
-        DrawStr(&sNormal, text, 88, 12, TXT_DARK, TXT_LIGHT);
-        DrawStr(&sNormal, gSpeciesNames[species], 88, 30, TXT_DARK, TXT_LIGHT);
-        DrawTypeIcon(gSpeciesInfo[species].types[0], 88, 50);
-        if (gSpeciesInfo[species].types[1] != gSpeciesInfo[species].types[0])
-            DrawTypeIcon(gSpeciesInfo[species].types[1], 124, 50);
-        if (caught)
-        {
-            u32 inches = (entry->height * 10000 / 254 + 50) / 100; /* decimetres to inches */
-            u32 pounds = (entry->weight * 100000 / 4536 + 50) / 100; /* hectograms to 0.1 lbs */
-            u8 *p;
-
-            DrawStr(&sSmall, entry->categoryName, 88, 70, TXT_DARK, TXT_LIGHT);
-            StringCopy(text, Ascii("HT "));
-            p = StringAppend(text, Number(inches / 12, 2, STR_CONV_MODE_LEFT_ALIGN));
-            p[0] = CHAR_SGL_QUOTE_RIGHT;
-            p[1] = EOS;
-            StringAppend(text, Number(inches % 12, 2, STR_CONV_MODE_LEADING_ZEROS));
-            DrawStr(&sSmall, text, 88, 82, TXT_DARK, TXT_LIGHT);
-            StringCopy(text, Ascii("WT "));
-            StringAppend(text, Number(pounds / 10, 4, STR_CONV_MODE_LEFT_ALIGN));
-            StringAppend(text, Ascii(" lbs."));
-            DrawStr(&sSmall, text, 150, 82, TXT_DARK, TXT_LIGHT);
-            DrawBox(BOX_MESSAGE, 0, 96, 30, 15);
-            DrawStr(&sSmall, entry->description, 18, 106, TXT_WHITE, TXT_DARK);
-        }
-        DrawLabelButton(64, 216, 14, 3, gText_Cancel2, s->pressed == HIT_BACK, TRUE, HIT_BACK);
-        return;
-    }
-
-    /* The list. */
-    DrawBox(BOX_MENU, 0, 0, 30, 3);
-    StringCopy(text, Ascii("SEEN "));
-    StringAppend(text, Number(s->dexSeen, 3, STR_CONV_MODE_LEFT_ALIGN));
-    DrawStr(&sSmall, text, 12, 6, TXT_DARK, TXT_LIGHT);
-    StringCopy(text, Ascii("OWN "));
-    StringAppend(text, Number(s->dexOwn, 3, STR_CONV_MODE_LEFT_ALIGN));
-    DrawStr(&sSmall, text, 100, 6, TXT_DARK, TXT_LIGHT);
-    DrawStrRight(&sSmall, s->national ? Ascii("NATIONAL") : Ascii("HOENN"), 228, 6, TXT_BLUE, TXT_LBLUE);
-
-    DrawBox(BOX_MENU, 0, 24, 26, 27);
-    for (int r = 0; r < DEX_ROWS && s->dexScroll + r < s->dexCount; ++r)
-    {
-        int y = 32 + r * 24;
-        u16 num = s->dexNum[r];
-        bool8 seen = s->dexFlags[r] & 1, caught = s->dexFlags[r] & 2;
-
-        if (s->pressed == HIT_ROW + r)
-            FillRect(8, y, 192, 24, TXT_LIGHT);
-        if (caught && sRes.ballTiles)
-            DrawSprite(sRes.ballTiles, 2, 2, 10, y + 4, sRes.ballPal.c);
-        StringCopy(text, Ascii("No."));
-        StringAppend(text, Number(s->national ? num : s->dexScroll + r + 1, 3, STR_CONV_MODE_LEADING_ZEROS));
-        DrawStr(&sSmall, text, 30, y + 6, TXT_DARK, TXT_WHITE);
-        DrawStr(&sNormal, seen ? gSpeciesNames[NationalPokedexNumToSpecies(num)] : Ascii("----------"), 84, y + 4,
-                TXT_DARK, TXT_WHITE);
-        if (seen)
-            AddHit(8, y, 192, 24, HIT_ROW + r);
-    }
-    DrawScrollArrows(208, 24, H, s->dexScroll > 0, s->dexScroll + DEX_ROWS < s->dexCount, s->pressed);
-}
-
-/* ------------------------------------------------------------------------ */
 /* Drawing: save, options, PokéNav                                          */
 /* ------------------------------------------------------------------------ */
 
@@ -3140,22 +2767,13 @@ static void Render(const ViewState *s)
                 DrawParty(s);
             break;
         case SCR_BAG:
-            /* The game's bag is drawn there by the compositor; black until
-             * it is, as the bag fades in from black. */
-            if (s->bagView)
-                FillRect(0, 0, CW, H, 0);
-            else
-                DrawBag(s);
+        case SCR_POKEDEX:
+            /* The game's bag and Pokédex are drawn there by the compositor;
+             * black until they are, as they fade in from black, and while
+             * the field is on its way to opening them (OpenAsked). */
+            FillRect(0, 0, CW, H, 0);
             break;
         case SCR_CARD: DrawTrainerCard(s); break;
-        case SCR_POKEDEX:
-            /* The game's Pokédex is drawn there by the compositor, black
-             * until it is, as it fades in from black. */
-            if (s->mode == MODE_POKEDEX)
-                FillRect(0, 0, CW, H, 0);
-            else
-                DrawDex(s);
-            break;
         case SCR_SAVE: DrawSave(s); break;
         case SCR_OPTION: DrawOptions(s); break;
         }
@@ -3183,22 +2801,20 @@ enum
     PLAN_KEYS,       /* `keys`, then A */
     PLAN_START,      /* open start menu entry `target` */
     PLAN_PARTY,      /* walk gPartyMenu.slotId, then A */
-    PLAN_POCKET,     /* switch the bag's pocket */
-    PLAN_BAG_ITEM,   /* walk the bag list, then A */
     PLAN_MENU,       /* walk a game menu's cursor, then A */
 };
 
 typedef struct
 {
-    u8 kind, steps, wait, pocket, cols, tries, maxWait;
+    u8 kind, steps, wait, cols, tries, maxWait;
     bool8 release;
     s16 target;
     u16 keys;
 } Plan;
 
 static Plan sPlan;
-/* What follows the current plan: opening the party menu on a mon, the bag on
- * an item... Each step waits for the game to reach the screen it needs. */
+/* What follows the current plan: opening the party menu on a mon... Each
+ * step waits for the game to reach the screen it needs. */
 static Plan sQueue[2];
 static u8 sQueued;
 static u16 sInjected;
@@ -3210,7 +2826,6 @@ static Plan MakePlan(u8 kind, s16 target)
     memset(&p, 0, sizeof(p));
     p.kind = kind;
     p.target = target;
-    p.pocket = gBagPosition.pocket;
     p.maxWait = 45;
     return p;
 }
@@ -3259,7 +2874,6 @@ static void CancelPlan(void)
 static bool8 PlanCursor(s16 *cursor)
 {
     const u8 *names[MAX_MENU_ITEMS];
-    u8 cols;
 
     switch (sPlan.kind)
     {
@@ -3267,18 +2881,9 @@ static bool8 PlanCursor(s16 *cursor)
         if (!PartyMenuReady()) return FALSE;
         *cursor = gPartyMenu.slotId;
         return TRUE;
-    case PLAN_POCKET:
-        if (!BagMenuReady()) return FALSE;
-        *cursor = gBagPosition.pocket;
-        return TRUE;
-    case PLAN_BAG_ITEM:
-        if (!BagMenuReady() || gBagPosition.pocket != sPlan.pocket) return FALSE;
-        *cursor = BagMenuIndex();
-        return TRUE;
     case PLAN_MENU:
         if (gPaletteFade.active) return FALSE;
-        if (gMain.callback2 == CB2_BagMenuRun ? !CtrBagMenu_GetActions(names, MAX_MENU_ITEMS, &cols)
-                                              : !CtrPartyMenu_GetActions(names, MAX_MENU_ITEMS))
+        if (!CtrPartyMenu_GetActions(names, MAX_MENU_ITEMS))
             return FALSE;
         *cursor = Menu_GetCursorPos();
         return TRUE;
@@ -3302,10 +2907,6 @@ static u16 PlanStep(s16 cur, s16 target)
         {
             return target < 2 ? DPAD_LEFT : DPAD_RIGHT;
         }
-        return target > cur ? DPAD_DOWN : DPAD_UP;
-    case PLAN_POCKET:
-        return target > cur ? DPAD_RIGHT : DPAD_LEFT;
-    case PLAN_BAG_ITEM:
         return target > cur ? DPAD_DOWN : DPAD_UP;
     case PLAN_MENU:
         if (sPlan.cols == 2 && (cur & 1) != (target & 1))
@@ -3388,8 +2989,7 @@ static void RunPlan(void)
     }
     if (cur == sPlan.target)
     {
-        if (sPlan.kind != PLAN_POCKET)
-            sInjected = A_BUTTON;
+        sInjected = A_BUTTON;
         FinishPlan();
         /* The next step must not see this press as its own. */
         sPlan.release = TRUE;
@@ -3771,7 +3371,6 @@ static struct
     bool8 active, dragged;
     s16 startX, startY, lastX, lastY;
     u8 pressed;
-    u16 dragScroll;
     bool8 bag;   /* on the game's bag or Pokédex, which take it themselves */
 } sTouch;
 
@@ -3884,66 +3483,6 @@ static void ActivatePokemon(u8 id, u8 mode)
         Answer(id);
 }
 
-static void ActivateBag(u8 id, u8 mode)
-{
-    if (id >= HIT_POCKET && id < HIT_POCKET + POCKETS_COUNT)
-    {
-        sBagPocket = id - HIT_POCKET;
-        sBagScroll = 0;
-        sBagTapped = -1;
-        if (mode == MODE_BAG_MENU && BagMenuReady())
-            StartPlan(PLAN_POCKET, sBagPocket);
-    }
-    else if (id >= HIT_ROW && id < HIT_ROW + BAG_ROWS)
-    {
-        u16 index = sBagScroll + (id - HIT_ROW);
-
-        sBagTapped = index;
-        if (mode == MODE_BAG_MENU)
-        {
-            if (BagMenuReady())
-            {
-                Plan item = MakePlan(PLAN_BAG_ITEM, index);
-                item.pocket = sBagPocket;
-                if (gBagPosition.pocket != sBagPocket)
-                {
-                    StartPlan(PLAN_POCKET, sBagPocket);
-                    QueuePlan(item);
-                }
-                else
-                {
-                    sPlan = item;
-                    sQueued = 0;
-                }
-            }
-        }
-        else if (FieldIdle() && CtrStartMenu_Available())
-        {
-            /* The bag, hidden, on this item, with its menu open. */
-            Plan pocket = MakePlan(PLAN_POCKET, sBagPocket), item = MakePlan(PLAN_BAG_ITEM, index);
-            item.pocket = sBagPocket;
-            BeginSession(FALSE);
-            StartPlan(PLAN_START, START_BAG);
-            QueuePlan(pocket);
-            QueuePlan(item);
-        }
-    }
-    else if (id == HIT_UP && sShown.panel != PANEL_QUANTITY)
-    {
-        if (sBagScroll > 0)
-            --sBagScroll;
-    }
-    else if (id == HIT_DOWN && sShown.panel != PANEL_QUANTITY)
-        ++sBagScroll; /* clamped by the snapshot */
-    else if (mode == MODE_BAG_MENU)
-    {
-        if (id >= HIT_MENU && id < HIT_MENU + MAX_MENU_ITEMS)
-            ChooseMenuEntry(id - HIT_MENU);
-        else
-            Answer(id);
-    }
-}
-
 static void ActivateOption(u8 id)
 {
     bool8 back = id >= HIT_OPTION + HIT_OPTION_BACK;
@@ -3992,6 +3531,46 @@ static void ActivateOption(u8 id)
     PlaySE(SE_SELECT);
 }
 
+/*
+ * The game's bag or Pokédex for BAG or POKéDEX, opened from the field as the
+ * start menu opens it. Chosen while another screen was up - the Pokédex, the
+ * bag, the party menu, the PokéNav - it opens once that one has closed and
+ * the field is idle again (OpenAsked); until then the area is black.
+ */
+static bool8 OpenGameScreen(u8 screen)
+{
+    if (!FieldIdle() || !CtrStartMenu_Available())
+        return FALSE;
+    StartPlan(PLAN_START, screen == SCR_BAG ? START_BAG : START_POKEDEX);
+    BeginSession(FALSE);
+    return TRUE;
+}
+
+static void OpenAsked(u8 mode)
+{
+    static u8 lastMode = MODE_OFF;
+    static u16 waited;
+
+    /* Closed by its own button or B: back to the map, not opened again. */
+    if (mode != lastMode)
+    {
+        if ((lastMode == MODE_BAG_MENU && sScreen == SCR_BAG) || (lastMode == MODE_POKEDEX && sScreen == SCR_POKEDEX))
+            sScreen = SCR_MAP;
+        lastMode = mode;
+        waited = 0;
+    }
+    if (mode != MODE_FIELD || (sScreen != SCR_BAG && sScreen != SCR_POKEDEX) || sSession.active
+     || sPlan.kind != PLAN_NONE)
+        return;
+    if (!(EnabledScreens() & (1 << sScreen)))
+        sScreen = SCR_MAP;
+    else if (OpenGameScreen(sScreen))
+        waited = 0;
+    /* Two seconds without the field coming back idle: given up. */
+    else if (++waited > 120)
+        sScreen = SCR_MAP;
+}
+
 static void Activate(u8 id, u8 mode)
 {
     if (id == HIT_NONE)
@@ -4022,7 +3601,6 @@ static void Activate(u8 id, u8 mode)
             }
             return;
         }
-#ifdef CTR_BAG_ORIGINAL
         /* The bag on show: its own button closes it, as B does; any other
          * closes it for that screen. */
         if (mode == MODE_BAG_MENU)
@@ -4031,8 +3609,6 @@ static void Activate(u8 id, u8 mode)
                 sScreen = screen;
             return;
         }
-#endif
-#ifdef CTR_DEX_ORIGINAL
         /* The Pokédex's is its B; any other leaves it for that screen, B
          * after B, as the PokéNav's do. */
         if (mode == MODE_POKEDEX)
@@ -4043,11 +3619,10 @@ static void Activate(u8 id, u8 mode)
                 sScreen = screen;
             return;
         }
-#endif
         /* A hidden menu is closed first, at a point where B leaves it. */
         if (mode != MODE_FIELD)
         {
-            if ((mode == MODE_PARTY_MENU && PartyMenuReady() && sSummary < 0) || (mode == MODE_BAG_MENU && BagMenuReady()))
+            if (mode == MODE_PARTY_MENU && PartyMenuReady() && sSummary < 0)
             {
                 Press(B_BUTTON);
                 sScreen = screen;
@@ -4065,36 +3640,17 @@ static void Activate(u8 id, u8 mode)
             }
             return;
         }
-#ifdef CTR_BAG_ORIGINAL
-        /* The game's bag, as the PokéNav: it takes the area when it opens. */
-        if (screen == SCR_BAG)
+        /* The game's bag and Pokédex, as the PokéNav: they take the area
+         * when they open. */
+        if (screen == SCR_BAG || screen == SCR_POKEDEX)
         {
-            if (FieldIdle() && CtrStartMenu_Available())
-            {
-                StartPlan(PLAN_START, START_BAG);
-                BeginSession(FALSE);
-            }
+            OpenGameScreen(screen);
             return;
         }
-#endif
-#ifdef CTR_DEX_ORIGINAL
-        /* The game's Pokédex, opened as the bag is. */
-        if (screen == SCR_POKEDEX)
-        {
-            if (FieldIdle() && CtrStartMenu_Available())
-            {
-                StartPlan(PLAN_START, START_POKEDEX);
-                BeginSession(FALSE);
-            }
-            return;
-        }
-#endif
         if (screen == SCR_SAVE && sScreen != SCR_SAVE)
             OpenSave();
         if (screen == SCR_POKEMON)
             sSummary = -1;
-        if (screen == SCR_POKEDEX && sScreen == SCR_POKEDEX)
-            sDexDetail = 0;
         sScreen = screen;
         sPickMapsec = MAPSEC_NONE;
         return;
@@ -4108,19 +3664,6 @@ static void Activate(u8 id, u8 mode)
         break;
     case SCR_POKEMON:
         ActivatePokemon(id, mode);
-        break;
-    case SCR_BAG:
-        ActivateBag(id, mode);
-        break;
-    case SCR_POKEDEX:
-        if (id == HIT_BACK)
-            sDexDetail = 0;
-        else if (id >= HIT_ROW && id < HIT_ROW + DEX_ROWS)
-            sDexDetail = sShown.dexNum[id - HIT_ROW];
-        else if (id == HIT_UP)
-            sDexScroll = sDexScroll > DEX_ROWS ? sDexScroll - DEX_ROWS : 0;
-        else if (id == HIT_DOWN)
-            sDexScroll += DEX_ROWS; /* clamped by the snapshot */
         break;
     case SCR_SAVE:
         if (id == HIT_YES && FieldIdle())
@@ -4155,19 +3698,15 @@ static u8 ProcessTouch(u8 mode)
     if (mode != sShown.mode)
     {
         /* A touch that began on another screen does not act on this one. */
-#ifdef CTR_BAG_ORIGINAL
         if (sTouch.bag)
+        {
             CtrBag_Touch(BAG_TOUCH_CANCEL, 0, 0);
-#endif
-#ifdef CTR_DEX_ORIGINAL
-        if (sTouch.bag)
             CtrPokedex_Touch(BAG_TOUCH_CANCEL, 0, 0);
-#endif
+        }
         sTouch.active = FALSE;
         sTouch.bag = FALSE;
         return HIT_NONE;
     }
-#ifdef CTR_BAG_ORIGINAL
     /* The game's bag: its picture in the middle of its area, the touch in
      * pixels of it, as it goes. */
     if ((in->touchDown && BagShown(mode) && (sShown.bagView == BAG_VIEW_WHOLE || in->touchX < CW))
@@ -4189,8 +3728,6 @@ static u8 ProcessTouch(u8 mode)
         }
         return HIT_NONE;
     }
-#endif
-#ifdef CTR_DEX_ORIGINAL
     /* The game's Pokédex, the same way: its picture in the middle of the
      * area left of the column. */
     if ((in->touchDown && DexShown(mode) && in->touchX < CW) || (sTouch.bag && sTouch.active && DexShown(mode)))
@@ -4211,7 +3748,6 @@ static u8 ProcessTouch(u8 mode)
         }
         return HIT_NONE;
     }
-#endif
     if (in->touchDown)
     {
         sTouch.active = TRUE;
@@ -4219,7 +3755,6 @@ static u8 ProcessTouch(u8 mode)
         sTouch.startX = sTouch.lastX = in->touchX;
         sTouch.startY = sTouch.lastY = in->touchY;
         sTouch.pressed = HitTest(in->touchX, in->touchY);
-        sTouch.dragScroll = sShown.screen == SCR_POKEDEX ? sDexScroll : sBagScroll;
     }
     else if (in->touchActive && sTouch.active)
     {
@@ -4229,16 +3764,6 @@ static u8 ProcessTouch(u8 mode)
         sTouch.lastY = in->touchY;
         if (!sTouch.dragged && (dy > 8 || dy < -8 || dx > 8 || dx < -8))
             sTouch.dragged = TRUE;
-        /* Dragging a list scrolls it, a row per row height. */
-        if (sTouch.dragged && sTouch.pressed >= HIT_ROW && sTouch.pressed < HIT_ROW + 16)
-        {
-            int scroll = sTouch.dragScroll - dy / 24;
-            if (scroll < 0) scroll = 0;
-            if (sShown.screen == SCR_POKEDEX)
-                sDexScroll = scroll;
-            else if (mode == MODE_FIELD)
-                sBagScroll = scroll;
-        }
     }
     else if (in->touchUp && sTouch.active)
     {
@@ -4314,6 +3839,7 @@ void CtrBottom_Frame(void)
 
     mode = CurrentMode();
     pressed = ProcessTouch(mode);
+    OpenAsked(mode);
     RunPlan();
     RunNav(mode);
 
