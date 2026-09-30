@@ -3,8 +3,8 @@
  * as a GBA screen (full.mk, CTR_GBA_CENTRED_SRCS): the fly map, the Town Map,
  * the title menu with the professor's speech, the naming screen and the clock;
  * and into pokenav.c, pokemon_storage_system.c (the PC's boxes),
- * pokemon_summary_screen.c and item_menu.c (the bag), whose screens are shown
- * on the bottom screen instead.
+ * pokemon_summary_screen.c, item_menu.c (the bag) and pokedex.c, whose
+ * screens are shown on the bottom screen instead.
  *
  * Unlike a stage (ctr_gba_stage.h) nothing is invented around the picture:
  * it sits 1:1 in the middle of the top screen, the layers that wrap on the
@@ -32,6 +32,8 @@
 #define SetVBlankCallback CtrCentredSummary_SetVBlankCallback
 #elif defined(CTR_CENTRED_BAG)
 #define SetVBlankCallback CtrCentredBag_SetVBlankCallback
+#elif defined(CTR_CENTRED_POKEDEX)
+#define SetVBlankCallback CtrCentredPokedex_SetVBlankCallback
 #else
 #define SetVBlankCallback CtrCentred_SetVBlankCallback
 #endif

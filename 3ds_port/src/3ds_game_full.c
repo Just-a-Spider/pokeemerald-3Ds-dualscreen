@@ -199,6 +199,22 @@ void CtrCentredBag_SetVBlankCallback(IntrCallback callback)
                                                                                   : CTR_CENTRED_BAG_WHOLE);
 }
 
+/* The Pokédex's own callback. The page it shows for a mon just caught puts
+ * back the battle's, which stays the battle's. */
+IntrCallback CtrPokedex_VBlankCallback(void);
+
+void CtrCentredPokedex_SetVBlankCallback(IntrCallback callback)
+{
+#ifdef CTR_DEX_ORIGINAL
+    if (callback == CtrPokedex_VBlankCallback())
+    {
+        SetCentredCallback(callback, CTR_CENTRED_POKEDEX);
+        return;
+    }
+#endif
+    SetVBlankCallback(callback);
+}
+
 void CtrBattle_SetVBlankCallback(IntrCallback callback)
 {
     RememberCallback(&sBattle, callback, 0);

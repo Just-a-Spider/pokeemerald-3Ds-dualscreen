@@ -97,7 +97,9 @@ boxes' scrolling pattern around it); a tap on them acts in the game directly
 `PLATFORM_3DS`), without key presses. The bag is the game's own as well
 (`item_menu.c`): opened from the field it sits left of the column, opened
 from a battle, a shop or the PC it takes the whole screen, its stripes carried
-on around it, and taps act on it directly too. In battle the column gives way
+on around it, and taps act on it directly too. So is the Pokédex
+(`pokedex.c`), left of the column, the tile behind each of its screens carried
+out to its edges. In battle the column gives way
 to the action and move menus.
 
 ## Voxel overworld

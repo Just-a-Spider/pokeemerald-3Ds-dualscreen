@@ -1504,6 +1504,9 @@ typedef struct
      * margins - a backdrop of stripes the picture's edges only cut. */
     bool tile;
     uint8_t tileColumn, tileRow;
+    /* Or that tilemap entry itself, whatever the tilemap holds now. */
+    bool entry;
+    uint16_t tileEntry;
     uint8_t skyRows, bandRow, bandChars;
     int8_t bandX, bandY;
 } CentredFill;
@@ -1524,9 +1527,30 @@ static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
     /* The bag's stripes, as they are left of its pocket name. */
     [CTR_CENTRED_BAG] = {.layers = 1u << 2, .tile = true, .tileColumn = 0, .tileRow = 5},
     [CTR_CENTRED_BAG_WHOLE] = {.layers = 1u << 2, .tile = true, .tileColumn = 0, .tileRow = 5},
+    /* The Pokédex: a tile its screen on show names (CentredFillOf), or else
+     * whatever is at the back of it. */
+    [CTR_CENTRED_POKEDEX] = {.backmost = true},
 };
 
 int CtrPokenavList_Bg(void);
+/* pokedex.c: the tile of a layer the Pokédex's screen on show carries out to
+ * the edges, as bg << 16 | column << 8 | row, or with 1 << 20 as
+ * bg << 16 | the tilemap entry; -1 when it names none. */
+int CtrPokedex_Backdrop(void);
+
+/* How a centred screen's margins are filled. The Pokédex's depend on which of
+ * its screens is up: its stripes, the search's green, the area map's sea. */
+static const CentredFill *CentredFillOf(unsigned screen)
+{
+    static CentredFill dex;
+    int backdrop;
+
+    if (screen != CTR_CENTRED_POKEDEX || (backdrop = CtrPokedex_Backdrop()) < 0) return &sCentredFills[screen];
+    dex = (CentredFill){.layers = (uint8_t)(1u << ((backdrop >> 16) & 3)), .tile = true,
+                        .tileColumn = (uint8_t)(backdrop >> 8), .tileRow = (uint8_t)backdrop,
+                        .entry = (backdrop & (1 << 20)) != 0, .tileEntry = (uint16_t)backdrop};
+    return &dex;
+}
 
 /* The backgrounds a centred screen carries out to its edges. */
 static unsigned CentredLayers(const CentredFill *fill)
@@ -1598,7 +1622,7 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
                    : fill->wrap ? ((unsigned)v + (scrollX >> 3)) & mask
                    : v < 0 ? (unsigned)fill->inset[0] : v >= 30 ? 29u - (unsigned)fill->inset[2]
                    : ((unsigned)v + (scrollX >> 3)) & mask;
-            entry = Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
+            entry = fill->entry ? fill->tileEntry : Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
             address = chars + (entry & 1023) * (color256 ? 64 : 32);
             if (address >= 0x10000) continue;
             slot = GetTileSlot(address, entry >> 12, color256);
@@ -1644,7 +1668,7 @@ static void DrawNavBackmost(unsigned bg, bool texture)
 /* True when the centred screen draws this layer itself. */
 static bool DrawCentredBg(unsigned bg)
 {
-    const CentredFill *fill = &sCentredFills[sCentredScreen];
+    const CentredFill *fill = CentredFillOf(sCentredScreen);
 
     bool speech = fill->bandRow && ((Reg(8) >> 2) & 3) == fill->bandChars;
 
@@ -2787,7 +2811,7 @@ static void Layers(unsigned mask)
             if ((mode == 1 && bg == 3) || (mode == 2 && bg < 2)) continue;
             if (Reg(8 + bg * 2) & 0x40) Error(11, "BG mosaic not supported");
             int clipY0 = sClipY0, clipY1 = sClipY1, viewY = sViewY, drop = StageLayerDrop(bg);
-            bool lines = sNavBand && !(CentredLayers(&sCentredFills[sCentredScreen]) & (1u << bg));
+            bool lines = sNavBand && !(CentredLayers(CentredFillOf(sCentredScreen)) & (1u << bg));
 
             sViewY += drop;
             sClipY0 -= drop;
@@ -2944,7 +2968,7 @@ static struct
  */
 static bool DrawBandBgTex(unsigned bg)
 {
-    const CentredFill *fill = &sCentredFills[sCentredScreen];
+    const CentredFill *fill = CentredFillOf(sCentredScreen);
 
     if (!sLineBand.on || !LayerDrawable(bg)) return false;
     ViewBase();
@@ -3388,7 +3412,8 @@ static bool BottomWhole(unsigned screen)
 /* The screens drawn on the bottom screen at all. */
 static bool BottomScreen(unsigned screen)
 {
-    return screen == CTR_CENTRED_POKENAV || screen == CTR_CENTRED_BAG || BottomWhole(screen);
+    return screen == CTR_CENTRED_POKENAV || screen == CTR_CENTRED_BAG || screen == CTR_CENTRED_POKEDEX
+        || BottomWhole(screen);
 }
 
 bool CtrVideo_BottomWhole(void) { return sBottomInUse && BottomWhole(sCentredScreen); }
@@ -3479,7 +3504,8 @@ static void StorageComposePart(int left, int right, int top, int bottom, unsigne
 
 static void StorageCompose(int marginX)
 {
-    unsigned back = sCentredFills[sCentredScreen].layers ? sCentredFills[sCentredScreen].layers : 1u << 3;
+    unsigned back = CentredLayers(CentredFillOf(sCentredScreen)) ? CentredLayers(CentredFillOf(sCentredScreen))
+                                                                   : 1u << 3;
     unsigned marginsOnly = 63u & ~back;
 
     StorageComposePart(-marginX, 240 + marginX, -CTR_STAGE_Y, 160 + CTR_STAGE_Y, marginsOnly);
@@ -3522,7 +3548,7 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
     {
         if (target != sBottom) Compose();
         else if (BottomWhole(sCentredScreen)) StorageCompose(STORAGE_MARGIN_X);
-        else if (sCentredScreen == CTR_CENTRED_BAG) StorageCompose(0);
+        else if (sCentredScreen == CTR_CENTRED_BAG || sCentredScreen == CTR_CENTRED_POKEDEX) StorageCompose(0);
         else NavCompose();
     }
     sLayerExclude = 0;

@@ -11,7 +11,8 @@
  * drawn there too, and a tap on them acts in the game directly
  * (pokemon_storage_system.c, CtrStorage_Tap). So is the bag (CTR_BAG_ORIGINAL,
  * item_menu.c, CtrBag_Touch): BAG opens the game's own, left of the column;
- * opened from a battle, a shop or the PC it has the whole screen.
+ * opened from a battle, a shop or the PC it has the whole screen. And the
+ * Pokédex (CTR_DEX_ORIGINAL, pokedex.c, CtrPokedex_Touch), left of the column.
  *
  * Map, trainer card, Pokédex, summary, save and options are drawn and run
  * here directly. Using an item, switching mons, giving items or field moves
@@ -130,6 +131,12 @@ void CtrSummary_Tap(s16 x, s16 y);
 enum { BAG_TOUCH_DOWN, BAG_TOUCH_MOVE, BAG_TOUCH_UP, BAG_TOUCH_CANCEL };
 void CtrBag_Touch(u8 phase, s16 x, s16 y);
 bool8 CtrBag_Close(void);
+#endif
+#ifdef CTR_DEX_ORIGINAL
+/* pokedex.c: the Pokédex's touches, in pixels of its picture, as the bag's. */
+bool8 CtrPokedex_IsOpen(void);
+void CtrPokedex_Touch(u8 phase, s16 x, s16 y);
+bool8 CtrPokedex_Close(bool8 leave);
 #endif
 void SetPokemonCryStereo(u32 val);
 extern const struct PokedexEntry gPokedexEntries[];
@@ -1036,6 +1043,8 @@ enum
     MODE_POKENAV,
     /* The PC's boxes, drawn by the compositor over the whole screen. */
     MODE_STORAGE,
+    /* The game's Pokédex, drawn by the compositor left of the column. */
+    MODE_POKEDEX,
     MODE_BATTLE_INFO,
     MODE_BATTLE_ACTION,
     MODE_BATTLE_MOVE,
@@ -1127,6 +1136,17 @@ static bool8 BagShown(u8 mode)
 {
 #ifdef CTR_BAG_ORIGINAL
     return mode == MODE_BAG_MENU;
+#else
+    (void)mode;
+    return FALSE;
+#endif
+}
+
+/* Whether the game's own screen is what the area shows (CTR_*_ORIGINAL). */
+static bool8 DexShown(u8 mode)
+{
+#ifdef CTR_DEX_ORIGINAL
+    return mode == MODE_POKEDEX;
 #else
     (void)mode;
     return FALSE;
@@ -1364,6 +1384,10 @@ static u8 CurrentMode(void)
         return MODE_OFF;
     if (CtrPokenav_IsOpen())
         return MODE_POKENAV;
+#ifdef CTR_DEX_ORIGINAL
+    if (CtrPokedex_IsOpen())
+        return MODE_POKEDEX;
+#endif
 #ifdef CTR_BAG_ORIGINAL
     /* Before the boxes: the bag can be opened from them, whole screen too. */
     if (gMain.callback2 == CB2_BagMenuRun && gBagMenu)
@@ -1420,7 +1444,7 @@ static void BeginSession(bool8 battle)
 static bool8 UpdateSession(u8 mode, bool8 planRunning)
 {
     bool8 inMenu = mode == MODE_PARTY_MENU || mode == MODE_BAG_MENU || mode == MODE_POKENAV
-                || mode == MODE_STORAGE;
+                || mode == MODE_STORAGE || mode == MODE_POKEDEX;
     bool8 home = gMain.callback2 == CB2_Overworld || gMain.callback2 == BattleMainCB2;
 
     if (inMenu && !sSession.active)
@@ -1967,6 +1991,8 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     }
     else if (mode == MODE_POKENAV)
         s->screen = SCR_POKENAV;
+    else if (mode == MODE_POKEDEX)
+        s->screen = SCR_POKEDEX;
     else if (mode == MODE_STORAGE)
         s->screen = SCR_COUNT;   /* the boxes cover the column */
     StringCopy(s->name, gSaveBlock2Ptr->playerName);
@@ -2005,7 +2031,8 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
             SnapshotCard(s);
             break;
         case SCR_POKEDEX:
-            SnapshotDex(s);
+            if (mode != MODE_POKEDEX)
+                SnapshotDex(s);
             break;
         case SCR_SAVE:
             s->saveStep = sSaveStep;
@@ -3121,7 +3148,14 @@ static void Render(const ViewState *s)
                 DrawBag(s);
             break;
         case SCR_CARD: DrawTrainerCard(s); break;
-        case SCR_POKEDEX: DrawDex(s); break;
+        case SCR_POKEDEX:
+            /* The game's Pokédex is drawn there by the compositor, black
+             * until it is, as it fades in from black. */
+            if (s->mode == MODE_POKEDEX)
+                FillRect(0, 0, CW, H, 0);
+            else
+                DrawDex(s);
+            break;
         case SCR_SAVE: DrawSave(s); break;
         case SCR_OPTION: DrawOptions(s); break;
         }
@@ -3738,7 +3772,7 @@ static struct
     s16 startX, startY, lastX, lastY;
     u8 pressed;
     u16 dragScroll;
-    bool8 bag;   /* on the game's bag, which takes it itself */
+    bool8 bag;   /* on the game's bag or Pokédex, which take it themselves */
 } sTouch;
 
 /* The save, done here as start_menu.c's SaveDoSaveCallback does it. */
@@ -3998,6 +4032,18 @@ static void Activate(u8 id, u8 mode)
             return;
         }
 #endif
+#ifdef CTR_DEX_ORIGINAL
+        /* The Pokédex's is its B; any other leaves it for that screen, B
+         * after B, as the PokéNav's do. */
+        if (mode == MODE_POKEDEX)
+        {
+            if (screen == SCR_POKEDEX)
+                CtrPokedex_Close(FALSE);
+            else if (CtrPokedex_Close(TRUE))
+                sScreen = screen;
+            return;
+        }
+#endif
         /* A hidden menu is closed first, at a point where B leaves it. */
         if (mode != MODE_FIELD)
         {
@@ -4026,6 +4072,18 @@ static void Activate(u8 id, u8 mode)
             if (FieldIdle() && CtrStartMenu_Available())
             {
                 StartPlan(PLAN_START, START_BAG);
+                BeginSession(FALSE);
+            }
+            return;
+        }
+#endif
+#ifdef CTR_DEX_ORIGINAL
+        /* The game's Pokédex, opened as the bag is. */
+        if (screen == SCR_POKEDEX)
+        {
+            if (FieldIdle() && CtrStartMenu_Available())
+            {
+                StartPlan(PLAN_START, START_POKEDEX);
                 BeginSession(FALSE);
             }
             return;
@@ -4101,6 +4159,10 @@ static u8 ProcessTouch(u8 mode)
         if (sTouch.bag)
             CtrBag_Touch(BAG_TOUCH_CANCEL, 0, 0);
 #endif
+#ifdef CTR_DEX_ORIGINAL
+        if (sTouch.bag)
+            CtrPokedex_Touch(BAG_TOUCH_CANCEL, 0, 0);
+#endif
         sTouch.active = FALSE;
         sTouch.bag = FALSE;
         return HIT_NONE;
@@ -4109,7 +4171,7 @@ static u8 ProcessTouch(u8 mode)
     /* The game's bag: its picture in the middle of its area, the touch in
      * pixels of it, as it goes. */
     if ((in->touchDown && BagShown(mode) && (sShown.bagView == BAG_VIEW_WHOLE || in->touchX < CW))
-     || (sTouch.bag && sTouch.active))
+     || (sTouch.bag && sTouch.active && BagShown(mode)))
     {
         int ox = sShown.bagView == BAG_VIEW_WHOLE ? (W - 240) / 2 : 0, oy = (H - 160) / 2;
 
@@ -4124,6 +4186,28 @@ static u8 ProcessTouch(u8 mode)
         {
             sTouch.active = sTouch.bag = FALSE;
             CtrBag_Touch(BAG_TOUCH_UP, 0, 0);
+        }
+        return HIT_NONE;
+    }
+#endif
+#ifdef CTR_DEX_ORIGINAL
+    /* The game's Pokédex, the same way: its picture in the middle of the
+     * area left of the column. */
+    if ((in->touchDown && DexShown(mode) && in->touchX < CW) || (sTouch.bag && sTouch.active && DexShown(mode)))
+    {
+        int oy = (H - 160) / 2;
+
+        if (in->touchDown)
+        {
+            sTouch.active = sTouch.bag = TRUE;
+            CtrPokedex_Touch(BAG_TOUCH_DOWN, in->touchX, in->touchY - oy);
+        }
+        else if (in->touchActive)
+            CtrPokedex_Touch(BAG_TOUCH_MOVE, in->touchX, in->touchY - oy);
+        else
+        {
+            sTouch.active = sTouch.bag = FALSE;
+            CtrPokedex_Touch(BAG_TOUCH_UP, 0, 0);
         }
         return HIT_NONE;
     }
@@ -4245,7 +4329,7 @@ void CtrBottom_Frame(void)
             sSummary = -1;
         }
     }
-    if (hold && mode != MODE_POKENAV && mode != MODE_STORAGE && !BagShown(mode))   /* those are on show */
+    if (hold && mode != MODE_POKENAV && mode != MODE_STORAGE && !BagShown(mode) && !DexShown(mode))   /* on show */
         FastForward();
 
     /* The PokéNav's last frame stays left of the column until repainted. */

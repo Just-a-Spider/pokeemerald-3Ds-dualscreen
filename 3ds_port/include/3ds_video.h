@@ -103,6 +103,8 @@ enum
      */
     CTR_CENTRED_BAG,
     CTR_CENTRED_BAG_WHOLE,
+    /* The Pokédex, opened from the field: left of the column as the bag. */
+    CTR_CENTRED_POKEDEX,
     CTR_CENTRED_SCREENS
 };
 void CtrVideo_SetCentred(unsigned screen);

@@ -156,6 +156,19 @@ build/root/src/item_menu.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_BAG \
 	-include $(abspath compat/ctr_gba_centred.h)
 build/root/src/item_menu.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
 endif
+# The Pokédex as the game draws it, left of the column: its list, search,
+# entries, area, cry and size screens. pokedex.c installs their VBlank
+# callbacks. CTR_DEX_ORIGINAL=0 brings back the bottom screen's own list.
+CTR_DEX_ORIGINAL ?= 1
+ifeq ($(CTR_DEX_ORIGINAL),1)
+FULLCFLAGS += -DCTR_DEX_ORIGINAL
+CTR_GBA_DEX_OBJS := $(patsubst %,build/root/src/%.o,pokedex pokedex_area_screen pokedex_area_region_map \
+	pokedex_cry_screen)
+$(CTR_GBA_DEX_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE
+$(CTR_GBA_DEX_OBJS): $(ROOT)/include/gba/defines.h
+build/root/src/pokedex.o: FULLCFLAGS += -DCTR_CENTRED_POKEDEX -include $(abspath compat/ctr_gba_centred.h)
+build/root/src/pokedex.o: compat/ctr_gba_centred.h
+endif
 # The battle scene: one 240x160 composition whose sprites, windows, scanline
 # tables and BG pages are all laid out for the GBA screen, shown 1:1 and filled
 # out to the whole top screen by the compositor (compat/ctr_gba_battle.h).
