@@ -383,7 +383,7 @@ enum { SCR_MAP, SCR_POKEMON, SCR_BAG, SCR_CARD, SCR_POKEDEX, SCR_POKENAV, SCR_SA
  * Only a build with the voxel renderer has that row.
  */
 enum { OPT_TEXT_SPEED, OPT_BATTLE_SCENE, OPT_BATTLE_STYLE, OPT_SOUND, OPT_BUTTON_MODE, OPT_FRAME,
-       OPT_VOXEL, OPT_VOXEL_PITCH, OPT_VOXEL_ZOOM, OPTION_ROWS };
+       OPT_VOXEL, OPT_VOXEL_PITCH, OPT_VOXEL_ZOOM, OPT_VOXEL_BLUR, OPTION_ROWS };
 #if CTR_VOXEL_ENABLED
 #define OPTION_SHOWN OPTION_ROWS
 #else
@@ -1063,6 +1063,7 @@ typedef struct
     /* Save and options. */
     u8 saveStep, canSave;
     u8 options[OPTION_ROWS];
+    u8 optionScroll;                  /* pixels the options list is scrolled by */
     /* Battle. */
     u8 isDouble, safari, cursor, battler;
     BattlerView battlers[MAX_BATTLERS_COUNT];
@@ -1088,6 +1089,30 @@ static ViewState sState, sShown;
 static bool8 sForceRedraw = TRUE;
 static bool8 sInGame;
 static u8 sScreen = SCR_MAP;
+/* The options list's scroll, in pixels, dragged by the stylus (OptionsDrag). */
+static int sOptionScroll, sOptionScrollStart;
+
+/* Options rows are this far apart; with the 3D rows there are more than fit. */
+#define OPTION_PITCH (OPTION_SHOWN > 6 ? 26 : 30)
+
+/* The 3D camera and blur rows only with the voxel overworld on. */
+static bool8 OptionRowShown(int row, bool8 voxel)
+{
+    if (row >= OPTION_SHOWN)
+        return FALSE;
+    return voxel || (row != OPT_VOXEL_PITCH && row != OPT_VOXEL_ZOOM && row != OPT_VOXEL_BLUR);
+}
+
+/* How far the options list can scroll: 0 when every row fits. */
+static int OptionsMaxScroll(bool8 voxel)
+{
+    int rows = 0, height;
+
+    for (int i = 0; i < OPTION_ROWS; ++i)
+        rows += OptionRowShown(i, voxel);
+    height = 4 + rows * OPTION_PITCH;
+    return height > H ? height - H : 0;
+}
 static u8 sAnimFrame;
 
 /* Per screen state, kept while another screen is shown. */
@@ -1840,6 +1865,10 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
             s->options[OPT_VOXEL] = CtrSettings_Voxel();
             s->options[OPT_VOXEL_PITCH] = CtrSettings_VoxelPitch();
             s->options[OPT_VOXEL_ZOOM] = CtrSettings_VoxelZoom();
+            s->options[OPT_VOXEL_BLUR] = CtrSettings_VoxelBlur();
+            if (sOptionScroll > OptionsMaxScroll(s->options[OPT_VOXEL]))
+                sOptionScroll = OptionsMaxScroll(s->options[OPT_VOXEL]);
+            s->optionScroll = (u8)sOptionScroll;
             break;
         }
         break;
@@ -2431,6 +2460,7 @@ static const u8 *OptionValue(int row, u8 value)
     case 3: return value ? gText_SoundStereo : gText_SoundMono;
     case 4: return value == 0 ? gText_ButtonTypeNormal : value == 1 ? gText_ButtonTypeLR : gText_ButtonTypeLEqualsA;
     case OPT_VOXEL: return value ? gText_BattleSceneOn : gText_BattleSceneOff;
+    case OPT_VOXEL_BLUR: return value ? gText_BattleSceneOn : gText_BattleSceneOff;
     case OPT_VOXEL_PITCH: return Number(value, 2, STR_CONV_MODE_LEFT_ALIGN);
     case OPT_VOXEL_ZOOM:
         StringCopy(frame, Number(value, 3, STR_CONV_MODE_LEFT_ALIGN));
@@ -2471,32 +2501,47 @@ static void DrawOptions(const ViewState *s)
     static const u8 left[] = {CHAR_LEFT_ARROW, EOS}, right[] = {CHAR_RIGHT_ARROW, EOS};
     const u8 *names[OPTION_ROWS] = {gText_TextSpeed, gText_BattleScene, gText_BattleStyle, gText_Sound,
                                     gText_ButtonMode, gText_Frame, Ascii("VOXEL 3D"), Ascii("3D ANGLE"),
-                                    Ascii("3D ZOOM")};
+                                    Ascii("3D ZOOM"), Ascii("3D BLUR")};
     /* The frame stays last, above its preview. */
     static const u8 order[OPTION_ROWS] = {OPT_TEXT_SPEED, OPT_BATTLE_SCENE, OPT_BATTLE_STYLE, OPT_SOUND,
                                           OPT_BUTTON_MODE, OPT_VOXEL, OPT_VOXEL_PITCH, OPT_VOXEL_ZOOM,
-                                          OPT_FRAME};
-    /* The camera rows only mean something with the voxel overworld on; with
-     * them there is no room left for the frame's preview. */
+                                          OPT_VOXEL_BLUR, OPT_FRAME};
+    /* The 3D rows only mean something with the voxel overworld on; with them
+     * there is no room left for the frame's preview, nor for every row: the
+     * list then scrolls (OptionsDrag). */
     bool8 camera = OPTION_SHOWN > OPT_VOXEL && s->options[OPT_VOXEL];
-    const int pitch = OPTION_SHOWN > 6 ? 26 : 30;
+    const int pitch = OPTION_PITCH;
+    int maxScroll = OptionsMaxScroll(camera);
+    /* A scrolling list gives up a tile at its right for the bar, which then
+     * stands clear of both the rows and the button column. */
+    int tiles = maxScroll > 0 ? 29 : 30, shift = (30 - tiles) * 8;
 
     for (int slot = 0, row = 0; row < OPTION_ROWS; ++row)
     {
         int i = order[row], y;
-        if (i >= OPTION_SHOWN || ((i == OPT_VOXEL_PITCH || i == OPT_VOXEL_ZOOM) && !camera))
+        if (!OptionRowShown(i, camera))
             continue;
-        y = 4 + slot++ * pitch;
+        y = 4 + slot++ * pitch - s->optionScroll;
+        if (y + 24 <= 0 || y >= H)
+            continue;
         bool8 on = s->pressed == HIT_OPTION + i || s->pressed == HIT_OPTION + HIT_OPTION_BACK + i;
 
-        DrawBoxEx(BOX_MENU, 0, y, 30, 3, on);
+        DrawBoxEx(BOX_MENU, 0, y, tiles, 3, on);
         DrawStr(&sSmall, names[i], 10, y + 6, LABEL_FG(on), LABEL_SH(on));
         DrawStr(&sSmall, left, 112, y + 6, LABEL_FG(on), LABEL_SH(on));
-        DrawStrCentered(&sSmall, OptionValue(i, s->options[i]), 170, y + 6, on ? TXT_WHITE : TXT_RED,
-                        on ? TXT_DARK : TXT_LRED);
-        DrawStr(&sSmall, right, 222, y + 6, LABEL_FG(on), LABEL_SH(on));
+        DrawStrCentered(&sSmall, OptionValue(i, s->options[i]), 170 - shift / 2, y + 6,
+                        on ? TXT_WHITE : TXT_RED, on ? TXT_DARK : TXT_LRED);
+        DrawStr(&sSmall, right, 222 - shift, y + 6, LABEL_FG(on), LABEL_SH(on));
         AddHit(0, y, 136, 24, HIT_OPTION + HIT_OPTION_BACK + i);
-        AddHit(136, y, 104, 24, HIT_OPTION + i);
+        AddHit(136, y, 104 - shift, 24, HIT_OPTION + i);
+    }
+    /* Where the list is scrolled to, when it does not fit. */
+    if (maxScroll > 0)
+    {
+        int track = H - 8, thumb = track * H / (H + maxScroll);
+
+        FillRect(CW - 5, 4, 2, track, TXT_LIGHT);
+        FillRect(CW - 5, 4 + (track - thumb) * s->optionScroll / maxScroll, 2, thumb, TXT_DARK);
     }
     /* What the chosen frame looks like. */
     if (camera)
@@ -3366,6 +3411,18 @@ static void NavSwipe(int dy)
 /* What a tap does                                                          */
 /* ------------------------------------------------------------------------ */
 
+/* A drag up or down the options list scrolls it, within its length. */
+static void OptionsDrag(int dy)
+{
+    int max = OptionsMaxScroll(CtrSettings_Voxel());
+
+    sOptionScroll = sOptionScrollStart - dy;
+    if (sOptionScroll < 0)
+        sOptionScroll = 0;
+    if (sOptionScroll > max)
+        sOptionScroll = max;
+}
+
 static struct
 {
     bool8 active, dragged;
@@ -3487,7 +3544,7 @@ static void ActivateOption(u8 id)
 {
     bool8 back = id >= HIT_OPTION + HIT_OPTION_BACK;
     u8 row = (id - HIT_OPTION) % HIT_OPTION_BACK;
-    static const u8 counts[OPTION_ROWS] = {3, 2, 2, 2, 3, WINDOW_FRAMES_COUNT, 2, 0, 0};
+    static const u8 counts[OPTION_ROWS] = {3, 2, 2, 2, 3, WINDOW_FRAMES_COUNT, 2, 0, 0, 2};
     u8 value, step = back ? counts[row] - 1 : 1;
 
     if (row >= OPTION_SHOWN)
@@ -3495,6 +3552,14 @@ static void ActivateOption(u8 id)
     if (row == OPT_VOXEL)
     {
         CtrSettings_SetVoxel(!CtrSettings_Voxel());
+        PlaySE(SE_SELECT);
+        return;
+    }
+    if (row == OPT_VOXEL_BLUR)
+    {
+        if (!CtrSettings_Voxel())
+            return;
+        CtrSettings_SetVoxelBlur(!CtrSettings_VoxelBlur());
         PlaySE(SE_SELECT);
         return;
     }
@@ -3755,6 +3820,7 @@ static u8 ProcessTouch(u8 mode)
         sTouch.startX = sTouch.lastX = in->touchX;
         sTouch.startY = sTouch.lastY = in->touchY;
         sTouch.pressed = HitTest(in->touchX, in->touchY);
+        sOptionScrollStart = sOptionScroll;
     }
     else if (in->touchActive && sTouch.active)
     {
@@ -3764,6 +3830,8 @@ static u8 ProcessTouch(u8 mode)
         sTouch.lastY = in->touchY;
         if (!sTouch.dragged && (dy > 8 || dy < -8 || dx > 8 || dx < -8))
             sTouch.dragged = TRUE;
+        if (sTouch.dragged && sScreen == SCR_OPTION && sTouch.startX < CW)
+            OptionsDrag(dy);
     }
     else if (in->touchUp && sTouch.active)
     {

@@ -57,3 +57,16 @@ void VoxelGrade_Texels(uint16_t *texels, unsigned count)
         texels[i] = (uint16_t)((sTable[bgr] & ~1u) | (t & 1u));
     }
 }
+
+void VoxelGrade_Brighten(uint16_t *texels, unsigned count, float factor)
+{
+    for (unsigned i = 0; i < count; ++i)
+    {
+        uint16_t t = texels[i];
+        unsigned r = Channel((float)((t >> 11) & 31) * factor);
+        unsigned g = Channel((float)((t >> 6) & 31) * factor);
+        unsigned b = Channel((float)((t >> 1) & 31) * factor);
+
+        texels[i] = (uint16_t)(r << 11 | g << 6 | b << 1 | (t & 1u));
+    }
+}

@@ -220,6 +220,9 @@ void CtrVideo_NotifyTilesetAnimWrite(const void *dest, unsigned bytes)
 }
 static CtrVideoStats sStats;
 static C3D_Tex sAtlas, sSurface;
+/* The voxel bloom's quarter-size target (VoxelBloomPrepare); absent, no bloom. */
+static C3D_Tex sBloomTex;
+static C3D_RenderTarget *sBloom;
 static C3D_RenderTarget *sLogical, *sTop, *sTopRight;
 static bool sStereo;
 static Tile sTiles[CACHE_COUNT];
@@ -3292,6 +3295,13 @@ bool CtrVideo_Init(void)
     step = "logical render target";
     sLogical = C3D_RenderTargetCreateFromTex(&sSurface, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH16);
     if (!sLogical) goto fail;
+    /* Not fatal: without it the voxel picture has no bloom. */
+    if (C3D_TexInitVRAM(&sBloomTex, 128, 64, GPU_RGB565))
+    {
+        C3D_TexSetFilter(&sBloomTex, GPU_LINEAR, GPU_LINEAR);
+        C3D_TexSetWrap(&sBloomTex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+        sBloom = C3D_RenderTargetCreateFromTex(&sBloomTex, GPU_TEXFACE_2D, 0, -1);
+    }
     step = "top screen render target";
     sTop = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
     if (!sTop) goto fail;
@@ -3717,28 +3727,119 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
 
 #if CTR_VOXEL_ENABLED
 /*
+ * HD-2D diorama: the tilt-shift of a miniature. The camera always looks north,
+ * so the top of the screen is the distance and the bottom the nearest ground;
+ * both are blurred, most at the screen's edge and not at all by the focus band
+ * around the player. Each band is two copies of the world surface drawn over
+ * it with bilinear filtering half a texel off either way, so each copy is the
+ * average of four texels and the two together are centred on the pixel;
+ * fading in from the focus band to the edge. A wider
+ * blur than the four one-pixel taps it replaces, for about the same fill.
+ * The surface is sampled NEAREST again afterwards: the picture itself stays
+ * pixel-sharp.
+ */
+#define DIORAMA_TOP 100    /* rows blurred at the top */
+#define DIORAMA_BOTTOM 56  /* ... and at the bottom */
+
+static void SurfaceFilter(GPU_TEXTURE_FILTER_PARAM filter)
+{
+    /* Batched draws sample with the state at the flush: flush first, and
+     * rebind so the new filter reaches the GPU. */
+    C2D_Flush();
+    C3D_TexSetFilter(&sSurface, filter, filter);
+    C3D_TexBind(0, &sSurface);
+}
+
+static void DioramaTap(int y0, int rows, bool top, float dx, float dy, float alpha)
+{
+    /* One column short at each side: the surface past the picture is not
+     * part of it. */
+    const Tex3DS_SubTexture region = {CTR_GAME_WIDTH - 2, (u16)rows,
+        (1.0f + dx) / 512.0f, 1.0f - (y0 + dy) / 256.0f,
+        (1.0f + dx + CTR_GAME_WIDTH - 2) / 512.0f, 1.0f - (y0 + dy + rows) / 256.0f};
+    C2D_ImageTint tint;
+
+    C2D_AlphaImageTint(&tint, 0.0f);
+    if (top)
+        C2D_TopImageTint(&tint, C2D_Color32f(1.0f, 1.0f, 1.0f, alpha), 0.0f);
+    else
+        C2D_BottomImageTint(&tint, C2D_Color32f(1.0f, 1.0f, 1.0f, alpha), 0.0f);
+    C2D_DrawImageAt((C2D_Image){&sSurface, &region}, 1, y0, 0, &tint, 1, 1);
+}
+
+static void VoxelDiorama(void)
+{
+    SurfaceFilter(GPU_LINEAR);
+    /* Half a texel either way: two 2x2 averages on either side of each
+     * pixel, together centred on it - a blur that does not shift the picture. */
+    DioramaTap(0, DIORAMA_TOP, true, 0.5f, 0.5f, 0.67f);
+    DioramaTap(0, DIORAMA_TOP, true, -0.5f, -0.5f, 0.50f);
+    DioramaTap(CTR_GAME_HEIGHT - DIORAMA_BOTTOM, DIORAMA_BOTTOM, false, 0.5f, 0.5f, 0.60f);
+    DioramaTap(CTR_GAME_HEIGHT - DIORAMA_BOTTOM, DIORAMA_BOTTOM, false, -0.5f, -0.5f, 0.45f);
+    SurfaceFilter(GPU_NEAREST);
+}
+
+/*
+ * Bloom: the brightest parts of the picture - sunlit sand, white walls, water
+ * catching the light - glow softly into their surroundings. The world surface
+ * is drawn at a quarter of its size into a small target, keeping only what is
+ * brighter than BLOOM_THRESHOLD (texture environment 4, which citro2d leaves
+ * free), then stretched back over the screen with bilinear filtering and
+ * added. Two passes: 6000 pixels, then one additive screen.
+ */
+#define BLOOM_W (CTR_GAME_WIDTH / 4)
+#define BLOOM_H (CTR_GAME_HEIGHT / 4)
+#define BLOOM_THRESHOLD 0.85f
+
+static void VoxelBloomPrepare(void)
+{
+    const Tex3DS_SubTexture logical = {CTR_GAME_WIDTH, CTR_GAME_HEIGHT, 0, 1,
+        CTR_GAME_WIDTH / 512.0f, 1 - CTR_GAME_HEIGHT / 256.0f};
+    unsigned t = (unsigned)(BLOOM_THRESHOLD * 255.0f + 0.5f);
+    C3D_TexEnv *env;
+
+    C2D_TargetClear(sBloom, C2D_Color32(0, 0, 0, 255));
+    C2D_SceneBegin(sBloom);
+    C2D_ViewReset();
+    Blend(5, false, false);
+    SurfaceFilter(GPU_LINEAR);
+    /* Replace, not blend: the surface's alpha is not the picture's. */
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
+    /* (colour - threshold) x 4: black below it. */
+    env = C3D_GetTexEnv(4);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_SUBTRACT);
+    C3D_TexEnvScale(env, C3D_RGB, GPU_TEVSCALE_4);
+    C3D_TexEnvColor(env, 0xFF000000u | t << 16 | t << 8 | t);
+    C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 0.25f, 0.25f);
+    C2D_Flush();
+    C3D_TexEnvInit(C3D_GetTexEnv(4));
+    SurfaceFilter(GPU_NEAREST);
+    BlendForget();
+}
+
+static void VoxelBloomCompose(float strength)
+{
+    const Tex3DS_SubTexture region = {BLOOM_W, BLOOM_H, 0, 1,
+        BLOOM_W / 128.0f, 1 - BLOOM_H / 64.0f};
+    C2D_ImageTint tint;
+
+    C2D_Flush();
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE, GPU_ZERO, GPU_ONE);
+    C2D_AlphaImageTint(&tint, strength);
+    C2D_DrawImageAt((C2D_Image){&sBloomTex, &region}, 0, 0, 0, &tint, 4.0f, 4.0f);
+    C2D_Flush();
+    BlendForget();
+}
+
+/*
  * The game's own UI and weather over the voxel world. BG0 carries text; only
  * OAM entries tagged by the sprite sorter as weather are composed. Drawing all
  * OBJ here would duplicate the player and every NPC over their billboards.
  */
-/* Fixed north-facing camera: the upper 88 pixels are the distant background.
- * Four one-pixel taps, fading to zero towards the focus plane, reuse the world
- * surface. No extra target, depth readback or full-screen blur on Old 3DS. */
-static void VoxelBackgroundBlur(void)
-{
-    static const int offsets[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-    C2D_ImageTint tint;
-    C2D_AlphaImageTint(&tint, 0.0f);
-    C2D_TopImageTint(&tint, C2D_Color32(255, 255, 255, 56), 0.0f);
-    for (unsigned i = 0; i < 4; ++i)
-    {
-        float x = 1.0f + offsets[i][0], y = 1.0f + offsets[i][1];
-        const Tex3DS_SubTexture region = {CTR_GAME_WIDTH - 2, 87,
-            x / 512.0f, 1.0f - y / 256.0f,
-            (x + CTR_GAME_WIDTH - 2) / 512.0f, 1.0f - (y + 87) / 256.0f};
-        C2D_DrawImageAt((C2D_Image){&sSurface, &region}, 1, 1, 0, &tint, 1, 1);
-    }
-}
 
 static void ComposeVoxelOverlay(void)
 {
@@ -3773,6 +3874,7 @@ static void RenderVoxel(uint32_t clear)
     /* The brightness effect (BLDY) on the field's backgrounds and sprites. */
     unsigned control = Reg(0x50), effect = (control >> 6) & 3;
     float bright = effect >= 2 ? Min(Reg(0x54) & 31, 16) / 16.0f : 0.0f;
+    float bloom;
 
     CtrVoxel_SetBrightness((control & 0x0e) ? bright : 0.0f, (control & 0x10) ? bright : 0.0f,
                            effect == 2);
@@ -3788,12 +3890,18 @@ static void RenderVoxel(uint32_t clear)
     C2D_Prepare();
     C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
     BlendForget();
+    bloom = sBloom != NULL ? CtrVoxel_Bloom() : 0.0f;
+    if (bloom > 0.005f)
+        VoxelBloomPrepare();
     C2D_TargetClear(sTop, C2D_Color32(0, 0, 0, 255));
     C2D_SceneBegin(sTop);
     C2D_ViewReset();
     Blend(5, false, false);
     C2D_DrawImageAt((C2D_Image){&sSurface, &logical}, 0, 0, 0, NULL, 1, 1);
-    VoxelBackgroundBlur();
+    if (CtrSettings_VoxelBlur())
+        VoxelDiorama();
+    if (bloom > 0.005f)
+        VoxelBloomCompose(bloom);
     if (!(Reg(0) & 128)) ComposeVoxelOverlay();
     C2D_Flush();
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
@@ -5089,6 +5197,10 @@ void CtrVideo_Shutdown(void)
     BandsRelease();
     sBandsFailed = false;
     if (sC2d) C2D_Fini();
+    if (sBloom) C3D_RenderTargetDelete(sBloom);
+    sBloom = NULL;
+    if (sBloomTex.data) C3D_TexDelete(&sBloomTex);
+    memset(&sBloomTex, 0, sizeof(sBloomTex));
     if (sSurface.data) C3D_TexDelete(&sSurface);
     LeavesRelease();
     if (sAtlas.data) C3D_TexDelete(&sAtlas);

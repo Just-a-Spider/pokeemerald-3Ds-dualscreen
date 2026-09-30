@@ -160,6 +160,9 @@ static shaderProgram_s sProgram;
 static int sUniProjection = -1, sUniModelView = -1;
 static int sUniShadeTint = -1, sUniTintDiff = -1, sUniGrade = -1, sUniFog = -1;
 static int sUniDappleU = -1, sUniDappleV = -1;
+/* The tree crowns' brightness against the rest of the art, applied once as
+ * the tree texture loads (BrightenCrowns). */
+#define VOXEL_TREE_BRIGHTNESS 1.12f
 /* The sun dapples' pattern; see MakeDapple. */
 static C3D_Tex sDappleTex;
 static bool sHaveDapple;
@@ -169,9 +172,14 @@ static int sDappleAnchorX, sDappleAnchorZ;
 /* The sun rays' mesh over the screen, linear; see MakeRays. */
 static VoxelGpuVertex *sRays;
 static unsigned sRayCount;
+/* The sunlit dust's vertices, rewritten every frame, linear; see DrawMotes. */
+static VoxelGpuVertex *sMotes;
+/* This frame's bloom strength, for the 2D compositor (CtrVoxel_Bloom). */
+static float sBloomStrength;
 #if CTR_VOXEL_LIGHTING
 static void MakeDapple(void);
 static void MakeRays(void);
+static void MakeMotes(void);
 static void FadeFor(bool sprites);
 #endif
 static VoxelVertex *sScratch;          /* chunk builder output, ordinary heap */
@@ -928,6 +936,26 @@ static VoxelGpuVertex *ChunkVram(unsigned bytes, bool forView)
 
 /* ── Init / shutdown ────────────────────────────────────────────────────── */
 
+/*
+ * Tree crowns a little lighter than the art: dense woods read as dark masses
+ * in 3D. Only the crowns - where gen_voxel_trees.py packs them - and not the
+ * trunks, whose ground is the tileset's own and must match the grass around.
+ * Once, on the texture as it loads: nothing per frame.
+ */
+static void BrightenCrowns(uint16_t *texels)
+{
+    static const struct
+    {
+        unsigned x, y, w, h;
+    } crowns[] = {{0, 0, 32, 36}, {32, 32, 16, 32}};
+
+    for (unsigned c = 0; c < sizeof(crowns) / sizeof(crowns[0]); ++c)
+        for (unsigned y = crowns[c].y; y < crowns[c].y + crowns[c].h; ++y)
+            for (unsigned x = crowns[c].x; x < crowns[c].x + crowns[c].w; ++x)
+                VoxelGrade_Brighten(&texels[CtrVideo_Texel(x, y, VOXEL_TREE_TEXTURE_DIM)], 1,
+                                    VOXEL_TREE_BRIGHTNESS);
+}
+
 bool CtrVoxel_Init(void)
 {
     const char *step = "open " VOXEL_SHADER_PATH;
@@ -1045,12 +1073,14 @@ bool CtrVoxel_Init(void)
         if (!loaded)
             goto fail;
         VoxelGrade_Texels(sTreeAtlas.data, VOXEL_TREE_TEXTURE_DIM * VOXEL_TREE_TEXTURE_DIM);
+        BrightenCrowns(sTreeAtlas.data);
     }
     C3D_TexSetFilter(&sTreeAtlas, GPU_NEAREST, GPU_NEAREST);
     C3D_TexSetWrap(&sTreeAtlas, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
 #if CTR_VOXEL_LIGHTING
     MakeDapple();
     MakeRays();
+    MakeMotes();
 #endif
 
     /* Not fatal: without models the houses fall back to the region path. */
@@ -1129,6 +1159,8 @@ void CtrVoxel_Shutdown(void)
     linearFree(sRays);
     sRays = NULL;
     sRayCount = 0;
+    linearFree(sMotes);
+    sMotes = NULL;
     for (unsigned i = 0; i < VOXEL_BUILDING_PAGES; ++i)
     {
         memset(&sPageSlots[i], 0, sizeof(sPageSlots[i]));
@@ -2805,12 +2837,14 @@ typedef struct
     float haze;                  /* the most the distance haze takes */
     float dappleLow, dappleHigh; /* brightness under a dapple's shade, in its light */
     float rays;                  /* the sun rays' strength at their brightest */
+    float bloom;                 /* glow around the brightest parts (3ds_video.c) */
+    float motes;                 /* the sunlit dust in the air, at its brightest */
 } VoxelLight;
 
 static VoxelLight LightFor(bool indoor)
 {
-    VoxelLight light = {{1.08f, 1.05f, 0.98f}, {0.98f, 1.02f, 1.10f}, VOXEL_HAZE_MAX,
-                        0.95f, 1.05f, 0.13f};
+    VoxelLight light = {{1.00f, 0.99f, 0.95f}, {0.93f, 0.97f, 1.05f}, VOXEL_HAZE_MAX,
+                        0.96f, 1.04f, 0.11f, 0.07f, 0.85f};
 
 #if CTR_VOXEL_LIGHTING
     if (!indoor)
@@ -2818,36 +2852,48 @@ static VoxelLight LightFor(bool indoor)
         switch (VoxelWorld_Weather())
         {
         case VOXEL_WEATHER_SUN:
-            light.sun[0] = 1.13f; light.sun[1] = 1.08f; light.sun[2] = 0.96f;
+            light.sun[0] = 1.04f; light.sun[1] = 1.01f; light.sun[2] = 0.93f;
             light.haze = 0.12f;
             light.dappleLow = 0.94f; light.dappleHigh = 1.07f;
-            light.rays = 0.17f;
+            light.rays = 0.14f;
+            light.bloom = 0.10f;
+            light.motes = 1.00f;
             break;
         case VOXEL_WEATHER_RAIN:
-            /* Overcast: no sun to break into patches or rays. */
+            /* Overcast: no sun to break into patches, rays or glinting dust. */
             light.sun[0] = 0.81f; light.sun[1] = 0.88f; light.sun[2] = 0.98f;
             light.shade[0] = 0.82f; light.shade[1] = 0.89f; light.shade[2] = 1.00f;
             light.haze = 0.30f;
             light.dappleLow = light.dappleHigh = 1.0f;
             light.rays = 0.0f;
+            light.bloom = 0.08f;
+            light.motes = 0.0f;
             break;
         case VOXEL_WEATHER_FOG:
+            /* Fog glows: more bloom, and no dust to see in it. */
             light.sun[0] = 0.95f; light.sun[1] = 0.98f; light.sun[2] = 1.00f;
             light.haze = 0.52f;
             light.dappleLow = 0.95f; light.dappleHigh = 1.02f;
             light.rays = 0.0f;
+            light.bloom = 0.18f;
+            light.motes = 0.0f;
             break;
         case VOXEL_WEATHER_PARTICLES:
+            /* The weather's own ash or sand fills the air instead. */
             light.sun[0] = 0.93f; light.sun[1] = 0.92f; light.sun[2] = 0.88f;
             light.haze = 0.36f;
             light.dappleLow = 0.92f; light.dappleHigh = 1.03f;
             light.rays = 0.0f;
+            light.bloom = 0.12f;
+            light.motes = 0.0f;
             break;
         case VOXEL_WEATHER_SHADE:
             light.sun[0] = 0.92f; light.sun[1] = 0.95f; light.sun[2] = 0.98f;
             light.haze = 0.25f;
             light.dappleLow = 0.92f; light.dappleHigh = 1.03f;
             light.rays = 0.0f;
+            light.bloom = 0.12f;
+            light.motes = 0.40f;
             break;
         default:
             break;
@@ -2861,6 +2907,8 @@ static VoxelLight LightFor(bool indoor)
     light.haze = 0.0f;
     light.dappleLow = light.dappleHigh = 1.0f;
     light.rays = 0.0f;
+    light.bloom = 0.0f;
+    light.motes = 0.0f;
     return light;
 }
 
@@ -3144,6 +3192,137 @@ static void DrawRays(const VoxelLight *light, const VoxelLight *unlit)
 }
 
 /*
+ * Sunlit dust: a few specks of light drifting in the air, the way dust and
+ * pollen glint in sunshine. Each is a small soft diamond - a fan of four
+ * triangles, bright in the middle and gone at its corners, so no texture -
+ * turned to face the camera. They live in the world, not on the screen: a
+ * speck stays where it is as the camera passes (anchored like the dapples)
+ * and is hidden behind a roof, depth tested but never written. The box
+ * around the camera's target they fill is wrapped, so there are always as
+ * many in view, entering at its far edges, off screen.
+ *
+ * VOXEL_MOTES x 12 vertices, rewritten each frame: the previous frame's draw
+ * has finished by then (the frame begins by waiting for it).
+ */
+#define VOXEL_MOTES 32
+#define VOXEL_MOTE_VERTICES 12
+#define VOXEL_MOTE_HALF_X 11.0f /* tiles each side of the camera's target */
+#define VOXEL_MOTE_HALF_Z 9.0f
+#define VOXEL_MOTE_LOW 0.3f     /* tiles above the ground */
+#define VOXEL_MOTE_HIGH 2.6f
+#define VOXEL_MOTE_SIZE 0.10f   /* tiles from the middle to a corner */
+#define VOXEL_MOTE_WIND 0.35f   /* tiles per second, the way the shadows fall */
+/* 0xAABBGGRR: warm white. */
+#define VOXEL_MOTE_COLOUR 0xFFD8F4FFu
+
+static void MakeMotes(void)
+{
+    sMotes = linearAlloc(VOXEL_MOTES * VOXEL_MOTE_VERTICES * sizeof(VoxelGpuVertex));
+    if (sMotes == NULL)
+        CtrLog_Write(CTR_LOG_ERROR, "VOXEL: no linear memory for the sunlit dust");
+}
+
+/* A fixed pseudo-random number in 0..1 for mote i. */
+static float MoteRandom(unsigned i, unsigned salt)
+{
+    uint32_t h = i * 2654435761u ^ salt * 2246822519u;
+
+    h = (h ^ (h >> 15)) * 2246822519u;
+    h ^= h >> 13;
+    return (float)(h & 0xFFFFu) / 65535.0f;
+}
+
+static float Wrap(float value, float size)
+{
+    return value - floorf(value / size) * size;
+}
+
+static void MoteVertex(VoxelGpuVertex *v, float x, float y, float z, float strength)
+{
+    v->u = v->v = 0.0f;
+    v->x = (int16_t)(x * 512.0f);
+    v->y = (int16_t)(y * 512.0f);
+    v->z = (int16_t)(z * 512.0f);
+    v->shade = (int16_t)(strength * VOXEL_SHADE_SCALE);
+}
+
+/*
+ * Colour is the constant warm white; alpha is the vertex's strength (the
+ * twinkle, gone at the corners) x the light's. Added over what is behind.
+ */
+static void DrawMotes(const C3D_Mtx *view, const VoxelLight *light, const VoxelLight *unlit)
+{
+    int originX = (int)floorf(sCamera.targetX), originZ = (int)floorf(sCamera.targetZ);
+    float seconds = (float)fmod((double)svcGetSystemTick() / SYSCLOCK_ARM11, 3600.0);
+    float len = sqrtf(VOXEL_SUN_DX * VOXEL_SUN_DX + VOXEL_SUN_DZ * VOXEL_SUN_DZ);
+    float windX = VOXEL_SUN_DX / len * VOXEL_MOTE_WIND, windZ = VOXEL_SUN_DZ / len * VOXEL_MOTE_WIND;
+    /* The camera's right and up in the world: the view's first two rows. */
+    float rx = view->r[0].x * VOXEL_MOTE_SIZE, ry = view->r[0].y * VOXEL_MOTE_SIZE;
+    float rz = view->r[0].z * VOXEL_MOTE_SIZE;
+    float ux = view->r[1].x * VOXEL_MOTE_SIZE, uy = view->r[1].y * VOXEL_MOTE_SIZE;
+    float uz = view->r[1].z * VOXEL_MOTE_SIZE;
+    unsigned strength = (unsigned)(light->motes * 255.0f + 0.5f);
+    VoxelGpuVertex *v = sMotes;
+    C3D_TexEnv *env;
+
+    for (unsigned i = 0; i < VOXEL_MOTES; ++i)
+    {
+        float phase = MoteRandom(i, 1) * 6.2832f;
+        /* Where it has drifted to in the anchored world, then brought into
+         * the box around the target. */
+        float wx = MoteRandom(i, 2) * 64.0f + seconds * windX * (0.6f + 0.8f * MoteRandom(i, 3));
+        float wz = MoteRandom(i, 4) * 64.0f + seconds * windZ * (0.6f + 0.8f * MoteRandom(i, 3));
+        float x = Wrap(wx - (float)(originX + sDappleAnchorX) + VOXEL_MOTE_HALF_X,
+                       2.0f * VOXEL_MOTE_HALF_X) - VOXEL_MOTE_HALF_X;
+        float z = Wrap(wz - (float)(originZ + sDappleAnchorZ) + VOXEL_MOTE_HALF_Z,
+                       2.0f * VOXEL_MOTE_HALF_Z) - VOXEL_MOTE_HALF_Z;
+        float y = sCamera.targetY + VOXEL_MOTE_LOW
+                + (VOXEL_MOTE_HIGH - VOXEL_MOTE_LOW) * MoteRandom(i, 5)
+                + 0.15f * sinf(seconds * 0.7f + phase);
+        float glint = 0.55f + 0.45f * sinf(seconds * (1.1f + MoteRandom(i, 6)) + phase * 2.0f);
+
+        MoteVertex(&v[0], x, y, z, glint);
+        MoteVertex(&v[1], x + ux, y + uy, z + uz, 0.0f);
+        MoteVertex(&v[2], x + rx, y + ry, z + rz, 0.0f);
+        v[3] = v[0];
+        MoteVertex(&v[4], x + rx, y + ry, z + rz, 0.0f);
+        MoteVertex(&v[5], x - ux, y - uy, z - uz, 0.0f);
+        v[6] = v[0];
+        MoteVertex(&v[7], x - ux, y - uy, z - uz, 0.0f);
+        MoteVertex(&v[8], x - rx, y - ry, z - rz, 0.0f);
+        v[9] = v[0];
+        MoteVertex(&v[10], x - rx, y - ry, z - rz, 0.0f);
+        MoteVertex(&v[11], x + ux, y + uy, z + uz, 0.0f);
+        v += VOXEL_MOTE_VERTICES;
+    }
+    GSPGPU_FlushDataCache(sMotes, VOXEL_MOTES * VOXEL_MOTE_VERTICES * sizeof(VoxelGpuVertex));
+
+    SetModelView(view, originX, originZ);
+    SetGrade(unlit);
+    env = C3D_GetTexEnv(0);
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_CONSTANT, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_PRIMARY_COLOR, GPU_CONSTANT, GPU_CONSTANT);
+    C3D_TexEnvOpAlpha(env, GPU_TEVOP_A_SRC_R, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_ALPHA);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
+    C3D_TexEnvScale(env, C3D_Alpha, GPU_TEVSCALE_2);
+    C3D_TexEnvColor(env, (strength << 24) | (VOXEL_MOTE_COLOUR & 0xFFFFFFu));
+    C3D_TexEnvInit(C3D_GetTexEnv(1));
+    C3D_TexEnvInit(C3D_GetTexEnv(2));
+    FadeFor(false);
+
+    C3D_AlphaTest(false, GPU_ALWAYS, 0);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_COLOR);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE, GPU_ZERO, GPU_ONE);
+    BindVertices(sMotes);
+    C3D_DrawArrays(GPU_TRIANGLES, 0, VOXEL_MOTES * VOXEL_MOTE_VERTICES);
+    C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
+    C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD,
+                   GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ZERO, GPU_ONE);
+}
+
+/*
  * The pattern's coordinates for a draw measured from (worldX, worldZ). A
  * point is first slid along the sun by its height, (x + DX y, z + DZ y), so a
  * roof and the ground beside it take the patch the same light passed through;
@@ -3274,6 +3453,11 @@ static VoxelFade sWorldFade, sSpriteFade;
 static float sBrightBg, sBrightObj;
 static bool sBrightWhite;
 
+float CtrVoxel_Bloom(void)
+{
+    return sReady ? sBloomStrength : 0.0f;
+}
+
 void CtrVoxel_SetBrightness(float backgrounds, float sprites, bool white)
 {
     sBrightBg = backgrounds;
@@ -3363,11 +3547,14 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
     VoxelLight light = LightFor(indoor), unlit = LightFor(true);
     bool dapples = DapplesOn(&light);
 
+    sBloomStrength = 0.0f;
+
     /* Stereoscopy is V8; the first milestone renders one eye. */
     (void)eyeOffset;
     if (!sReady || sDrawCount == 0)
         return;
 
+    sBloomStrength = light.bloom;
     C3D_FrameDrawOn(target);
 
     Mtx_Persp(&projection, C3D_AngleFromDegrees(sCamera.fov),
@@ -3563,6 +3750,11 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
         FadeFor(true);
         C3D_DrawArrays(GPU_TRIANGLES, 0, sSpriteVertices);
     }
+#if CTR_VOXEL_LIGHTING
+    /* Before the rays, which leave the orthographic projection behind. */
+    if (sMotes != NULL && light.motes > 0.005f)
+        DrawMotes(&view, &light, &unlit);
+#endif
 #if CTR_VOXEL_LIGHTING
     {
         bool rays = sRayCount != 0 && sHaveDapple && light.rays > 0.005f;

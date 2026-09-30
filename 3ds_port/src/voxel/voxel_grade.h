@@ -14,5 +14,7 @@ void VoxelGrade_Init(void);
 uint16_t VoxelGrade_RGBA5551(uint16_t bgr15);
 /* Grades RGBA5551 texels in place, keeping each one's alpha bit. */
 void VoxelGrade_Texels(uint16_t *texels, unsigned count);
+/* Scales RGBA5551 texels' brightness in place, keeping their alpha bit. */
+void VoxelGrade_Brighten(uint16_t *texels, unsigned count, float factor);
 
 #endif
