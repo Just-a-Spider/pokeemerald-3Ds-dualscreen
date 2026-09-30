@@ -65,6 +65,9 @@ void CtrVideo_RequestPlaneRelease(void);
  * screen with the space around it filled from its own art. See docs/ARCHITECTURE.md.
  */
 void CtrVideo_SetStage(bool stage);
+/* Whether a field move's banner is up: BG0 then wraps across the whole
+ * screen instead of being the text band (src/field_effect.c). */
+void CtrVideo_SetFieldBanner(bool banner);
 /*
  * Which GBA screen shown centred the frames that follow are, if any: 1:1 at
  * the stage position, with the layers that wrap on the GBA and sprites

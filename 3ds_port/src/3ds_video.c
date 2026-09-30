@@ -140,7 +140,15 @@ static int OamUnwrapY(unsigned index, int y)
 
 #if CTR_VOXEL_ENABLED
 static uint32_t sVoxelWeatherOam[4];
-static bool sVoxelWeatherOnly;
+/*
+ * Which sprites the voxel view draws over itself: the weather, before its
+ * text layer, and then the sprites placed on the screen rather than on the
+ * map (sScreenOam), which on the GBA sit over the text layer: the mon shown
+ * for a field move over its banner, Fly's bird and its rider. The map's own
+ * sprites are cards in the 3D scene (voxel_entities.c).
+ */
+enum { VOXEL_OBJ_NONE, VOXEL_OBJ_WEATHER, VOXEL_OBJ_SCREEN };
+static unsigned sVoxelObjPass = VOXEL_OBJ_NONE;
 
 void CtrVideo_ClearVoxelWeatherOam(void)
 {
@@ -280,6 +288,18 @@ static float sLayerOrigin;
  */
 #define CTR_FIELD_UI_SHIFT 76.0f
 static bool sFieldUi;
+/*
+ * The banner of a field move (src/field_effect.c, the mon shown for Surf, Cut,
+ * Fly...) is BG0 too, but a pattern of streaks meant to wrap across the whole
+ * screen as on the GBA, not a window: while it is up BG0 is drawn over the
+ * full width and not moved to the text band.
+ */
+static bool sFieldBanner;
+
+void CtrVideo_SetFieldBanner(bool banner)
+{
+    sFieldBanner = banner;
+}
 /* The 2D field this frame: its text backgrounds are drawn from layer
  * textures kept up to date cell by cell (LayerRenderCells). */
 static bool sFieldLayers;
@@ -1736,6 +1756,7 @@ static void DrawTextBg(unsigned bg)
         if (right > 240) right = 240;
         if (bottom > 160) bottom = 160;
     }
+    if (bg == 0 && sFieldBanner) right = CTR_GAME_WIDTH;
     if (right > sClipX1) right = sClipX1;
     if (bottom > sClipY1) bottom = sClipY1;
     if (left < sClipX0) left = sClipX0;
@@ -2036,6 +2057,8 @@ static bool DrawFieldBgTex(unsigned bg)
     width = layer->tex.width;
     height = layer->tex.height;
     x1 = sClipX1 < (int)width ? sClipX1 : (int)width;
+    /* The texture repeats as the tilemap wraps. */
+    if (bg == 0 && sFieldBanner) x1 = sClipX1;
     y1 = sClipY1 < (int)height ? sClipY1 : (int)height;
     if (x0 >= x1 || y0 >= y1) return true;
     sx = Reg(0x10 + bg * 4) & 511;
@@ -2668,8 +2691,14 @@ static void DrawObjects(unsigned priority, bool effects)
     for (int i = 127; i >= 0; --i)
     {
 #if CTR_VOXEL_ENABLED
-        if (sVoxelWeatherOnly && !(sVoxelWeatherOam[i >> 5] & (1u << (i & 31))))
-            continue;
+        if (sVoxelObjPass != VOXEL_OBJ_NONE)
+        {
+            bool weather = (sVoxelWeatherOam[i >> 5] & (1u << (i & 31))) != 0;
+            bool screen = (sScreenOam[i >> 5] & (1u << (i & 31))) != 0;
+
+            if (sVoxelObjPass == VOXEL_OBJ_WEATHER ? !weather : (weather || !screen))
+                continue;
+        }
 #endif
         if (sObjFilter != OBJ_ALL && TransitionOam((unsigned)i) != (sObjFilter == OBJ_TRANSITION))
             continue;
@@ -2702,7 +2731,7 @@ static void DrawObjects(unsigned priority, bool effects)
             if (sOamAnchored[i >> 5] & (1u << (i & 31))) y = OamUnwrapY((unsigned)i, y);
             else if (y >= VIEW_BOTTOM) y -= 256;
 #if CTR_VOXEL_ENABLED
-            if (sVoxelWeatherOnly)
+            if (sVoxelObjPass == VOXEL_OBJ_WEATHER)
             {
                 x += CTR_STAGE_X;
                 y += CTR_STAGE_Y;
@@ -2839,7 +2868,7 @@ static void Layers(unsigned mask)
              * the GPU. Guessing that from fps alone costs a hardware run. */
             uint64_t start = svcGetSystemTick();
             float shift = sLayerShift;
-            if (sFieldUi && bg == 0) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
+            if (sFieldUi && bg == 0 && !sFieldBanner) sLayerShift += CTR_FIELD_UI_SHIFT / sShiftZoom;
             if (((mode == 1 && bg == 2) || mode == 2) && sNavBand && !lines) DrawNavBackmostAffine(bg);
             else if ((mode == 1 && bg == 2) || mode == 2) DrawAffineBg(bg);
             else if (sBattle && bg == 0) DrawBattleTextLayer(bg);
@@ -3618,13 +3647,15 @@ static void ComposeVoxelOverlay(void)
     sClipX0 = sClipY0 = 0;
     sClipX1 = CTR_GAME_WIDTH;
     sClipY1 = CTR_GAME_HEIGHT;
-    sVoxelWeatherOnly = true;
+    sVoxelObjPass = VOXEL_OBJ_WEATHER;
     Layers(1u << 4);
-    sVoxelWeatherOnly = false;
     /* Text windows and prompts must stay above the precipitation. */
-    sLayerOrigin = CTR_FIELD_UI_SHIFT;
+    sLayerOrigin = sFieldBanner ? 0.0f : CTR_FIELD_UI_SHIFT;
     Layers(1u << 0);
     sLayerOrigin = 0.0f;
+    sVoxelObjPass = VOXEL_OBJ_SCREEN;
+    Layers(1u << 4);
+    sVoxelObjPass = VOXEL_OBJ_NONE;
 }
 
 /*
