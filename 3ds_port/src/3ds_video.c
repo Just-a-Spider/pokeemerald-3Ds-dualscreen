@@ -1500,6 +1500,10 @@ typedef struct
     /* The layers' margins read on through the tilemap, as the GBA wraps it,
      * instead of repeating the picture's edge row and column. */
     bool wrap;
+    /* Instead: one tile of the layer, at tileColumn, tileRow, over all the
+     * margins - a backdrop of stripes the picture's edges only cut. */
+    bool tile;
+    uint8_t tileColumn, tileRow;
     uint8_t skyRows, bandRow, bandChars;
     int8_t bandX, bandY;
 } CentredFill;
@@ -1517,6 +1521,9 @@ static const CentredFill sCentredFills[CTR_CENTRED_SCREENS] =
     /* The PC's scrolling pattern, which the GBA wraps round its 32x32 map. */
     [CTR_CENTRED_STORAGE] = {.layers = 1u << 3, .wrap = true},
     [CTR_CENTRED_SUMMARY] = {0},
+    /* The bag's stripes, as they are left of its pocket name. */
+    [CTR_CENTRED_BAG] = {.layers = 1u << 2, .tile = true, .tileColumn = 0, .tileRow = 5},
+    [CTR_CENTRED_BAG_WHOLE] = {.layers = 1u << 2, .tile = true, .tileColumn = 0, .tileRow = 5},
 };
 
 int CtrPokenavList_Bg(void);
@@ -1572,7 +1579,8 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
     for (int w = from; w < to && w * 8 - oy + sSpanShiftY < sClipY1; ++w)
     {
         bool beside = w >= 0 && w < 20;
-        unsigned row = fill->wrap ? (unsigned)(w + (int)(scrollY >> 3)) & rows
+        unsigned row = fill->tile ? fill->tileRow
+                     : fill->wrap ? (unsigned)(w + (int)(scrollY >> 3)) & rows
                      : w < 0 ? (unsigned)fill->inset[1] : w >= 20 ? 19u - (unsigned)fill->inset[3]
                      : (unsigned)(w + (int)(scrollY >> 3));
         unsigned rowBase;
@@ -1586,7 +1594,8 @@ static void DrawCentredMargins(unsigned bg, const CentredFill *fill, int from, i
             int slot;
 
             if (inside && beside) continue;
-            column = fill->wrap ? ((unsigned)v + (scrollX >> 3)) & mask
+            column = fill->tile ? fill->tileColumn
+                   : fill->wrap ? ((unsigned)v + (scrollX >> 3)) & mask
                    : v < 0 ? (unsigned)fill->inset[0] : v >= 30 ? 29u - (unsigned)fill->inset[2]
                    : ((unsigned)v + (scrollX >> 3)) & mask;
             entry = Read16(rowBase + (column & 31) * 2 + (column >> 5) * 2048);
@@ -3373,7 +3382,13 @@ bool CtrVideo_BottomInUse(void) { return sBottomInUse; }
 /* The screens drawn over the whole bottom screen, rather than left of the column. */
 static bool BottomWhole(unsigned screen)
 {
-    return screen == CTR_CENTRED_STORAGE || screen == CTR_CENTRED_SUMMARY;
+    return screen == CTR_CENTRED_STORAGE || screen == CTR_CENTRED_SUMMARY || screen == CTR_CENTRED_BAG_WHOLE;
+}
+
+/* The screens drawn on the bottom screen at all. */
+static bool BottomScreen(unsigned screen)
+{
+    return screen == CTR_CENTRED_POKENAV || screen == CTR_CENTRED_BAG || BottomWhole(screen);
 }
 
 bool CtrVideo_BottomWhole(void) { return sBottomInUse && BottomWhole(sCentredScreen); }
@@ -3435,11 +3450,12 @@ static void NavCompose(void)
 }
 
 /*
- * The PC's boxes (and a summary) on the bottom screen: the GBA picture 1:1 in
- * the middle of the whole screen. Around it only the boxes' scrolling pattern
- * at the back goes on, the summary has its backdrop; everything else, sprites
- * included, is cut at the picture's edges, where the GBA screen ends and
- * parks what it hides.
+ * The PC's boxes (and a summary, and the bag) on the bottom screen: the GBA
+ * picture 1:1 in the middle of the whole screen, or of the area left of the
+ * column. Around it only the layer at the back goes on - the boxes' scrolling
+ * pattern, the bag's stripes, the summary's backdrop; everything else,
+ * sprites included, is cut at the picture's edges, where the GBA screen ends
+ * and parks what it hides.
  */
 #define STORAGE_MARGIN_X ((BOTTOM_WIDTH - 240) / 2)
 
@@ -3461,11 +3477,12 @@ static void StorageComposePart(int left, int right, int top, int bottom, unsigne
     sLayerExclude = 0;
 }
 
-static void StorageCompose(void)
+static void StorageCompose(int marginX)
 {
-    unsigned marginsOnly = 63u & ~(1u << 3);
+    unsigned back = sCentredFills[sCentredScreen].layers ? sCentredFills[sCentredScreen].layers : 1u << 3;
+    unsigned marginsOnly = 63u & ~back;
 
-    StorageComposePart(-STORAGE_MARGIN_X, 240 + STORAGE_MARGIN_X, -CTR_STAGE_Y, 160 + CTR_STAGE_Y, marginsOnly);
+    StorageComposePart(-marginX, 240 + marginX, -CTR_STAGE_Y, 160 + CTR_STAGE_Y, marginsOnly);
     StorageComposePart(0, 240, 0, 160, 0);
     ClipToView();
 }
@@ -3504,7 +3521,8 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
     if (!(Reg(0) & 128))
     {
         if (target != sBottom) Compose();
-        else if (BottomWhole(sCentredScreen)) StorageCompose();
+        else if (BottomWhole(sCentredScreen)) StorageCompose(STORAGE_MARGIN_X);
+        else if (sCentredScreen == CTR_CENTRED_BAG) StorageCompose(0);
         else NavCompose();
     }
     sLayerExclude = 0;
@@ -4600,10 +4618,9 @@ void CtrVideo_HoldTop(bool hold)
 void CtrVideo_Present(void)
 {
     if (!sMemory.regs) CtrPlatform_Fatal("VIDEO has no logical memory bound");
-    /* The PokéNav and the PC's boxes are drawn on the bottom screen, whether
+    /* The PokéNav, the PC's boxes and the bag are drawn on the bottom screen, whether
      * or not the top is held. */
-    bool bottom = BottomReady((sCentredRequested == CTR_CENTRED_POKENAV || BottomWhole(sCentredRequested))
-                              && !sStageRequested);
+    bool bottom = BottomReady(BottomScreen(sCentredRequested) && !sStageRequested);
     sBottomInUse = bottom;
     if (sHoldTop && !bottom)
     {

@@ -95,6 +95,14 @@ enum
     CTR_CENTRED_STORAGE,
     /* A Pokémon's summary, on the bottom screen the same way. */
     CTR_CENTRED_SUMMARY,
+    /*
+     * The bag: opened from the field, in the 240x240 area left of the column,
+     * the picture in its middle; opened from anything else (a battle, a
+     * shop, the PC, giving an item) over the whole bottom screen. Its striped
+     * backdrop is carried on around it.
+     */
+    CTR_CENTRED_BAG,
+    CTR_CENTRED_BAG_WHOLE,
     CTR_CENTRED_SCREENS
 };
 void CtrVideo_SetCentred(unsigned screen);
@@ -105,9 +113,11 @@ void CtrVideo_SetCentred(unsigned screen);
  * screens are composed with them.
  */
 void CtrVideo_SetLineWindow(const uint16_t *values, unsigned lines, bool both);
-/* Whether the last frame drew the PokéNav into the bottom screen's left area. */
+/* Whether the last frame drew a game screen into the bottom screen: the
+ * PokéNav or the bag into its left area, or one over all of it. */
 bool CtrVideo_BottomInUse(void);
-/* Whether it drew the whole bottom screen: the PC's boxes or a summary. */
+/* Whether it drew the whole bottom screen: the PC's boxes, a summary, the bag
+ * opened from anywhere but the field. */
 bool CtrVideo_BottomWhole(void);
 /*
  * The PokéNav's line of the picture a tap on line y of the bottom screen

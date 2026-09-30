@@ -4198,7 +4198,7 @@ index 169ef002a665712e92f6fec36a86ee7888067a17..a154bacf5122bbebb940f2bc4240811e
 diff --git a/src/item_menu.c b/src/item_menu.c
 old mode 100755
 new mode 100644
-index 09bc25c90b99e98c0097771871daa4384159047c..12a45a6fd8a12ab9834c204a65d9ba6d4e2a5657
+index 09bc25c90b99e98c0097771871daa4384159047c..6ce8dbd1281564b01f4486604afc89124372ac00
 --- a/src/item_menu.c
 +++ b/src/item_menu.c
 @@ -24,6 +24,7 @@
@@ -4209,7 +4209,51 @@ index 09bc25c90b99e98c0097771871daa4384159047c..12a45a6fd8a12ab9834c204a65d9ba6d
  #include "malloc.h"
  #include "map_name_popup.h"
  #include "menu.h"
-@@ -577,7 +578,7 @@ void CB2_ChooseBerry(void)
+@@ -50,6 +51,11 @@
+ #include "constants/items.h"
+ #include "constants/rgb.h"
+ #include "constants/songs.h"
++#ifdef PLATFORM_3DS
++#include "port_platform.h"
++#include "3ds_assets.h"
++#include "item_icon.h"
++#endif
+ 
+ #define TAG_POCKET_SCROLL_ARROW 110
+ #define TAG_BAG_SCROLL_ARROW    111
+@@ -209,6 +215,31 @@ static void ConfirmToss(u8);
+ static void CancelToss(u8);
+ static void ConfirmSell(u8);
+ static void CancelSell(u8);
++#ifdef PLATFORM_3DS
++// Touch on the 3DS bottom screen, where the bag is shown (3ds_bottom_ui.c,
++// CtrBag_Touch). A tap is taken by whatever waits for input next and acts
++// there directly: a pocket switched, a row of the list chosen, a menu entry,
++// YES or NO, a message gone on. Dragging the list scrolls it, dragging over
++// a quantity changes it, holding a row still moves the item (SELECT). The
++// buttons work as ever.
++enum {
++    CTR_QUANTITY_NONE,
++    CTR_QUANTITY_CHANGED,
++    CTR_QUANTITY_OK,
++    CTR_QUANTITY_CANCEL,
++};
++static bool8 CtrBag_ListTouch(u8 taskId, s32 *listPosition);
++static bool8 CtrBag_SwapTouch(u8 taskId);
++static bool8 CtrBag_ContextTouch(s8 *selection);
++static u8 CtrBag_QuantityTouch(s16 *count, u16 max, u8 windowType);
++static void CtrBag_Prefetch(void);
++bool8 CtrMenu_TakeAck(void);
++#define BAG_ACK(keys) (JOY_NEW(keys) || CtrMenu_TakeAck())
++#define BAG_TOUCHED(what) (ctrTouch == CTR_QUANTITY_##what)
++#else
++#define BAG_ACK(keys) JOY_NEW(keys)
++#define BAG_TOUCHED(what) FALSE
++#endif
+ 
+ static const struct BgTemplate sBgTemplates_ItemMenu[] =
+ {
+@@ -577,7 +608,7 @@ void CB2_ChooseBerry(void)
  }
  
  // Choosing berry for Berry Blender or Berry Crush
@@ -4218,7 +4262,7 @@ index 09bc25c90b99e98c0097771871daa4384159047c..12a45a6fd8a12ab9834c204a65d9ba6d
  {
      GoToBagMenu(ITEMMENULOCATION_BERRY_BLENDER_CRUSH, BERRIES_POCKET, exitCallback);
  }
-@@ -611,7 +612,7 @@ void QuizLadyOpenBagMenu(void)
+@@ -611,7 +642,7 @@ void QuizLadyOpenBagMenu(void)
      gSpecialVar_Result = FALSE;
  }
  
@@ -4227,7 +4271,17 @@ index 09bc25c90b99e98c0097771871daa4384159047c..12a45a6fd8a12ab9834c204a65d9ba6d
  {
      gBagMenu = AllocZeroed(sizeof(*gBagMenu));
      if (gBagMenu == NULL)
-@@ -1159,10 +1160,18 @@ u8 GetItemListPosition(u8 pocketId)
+@@ -642,6 +673,9 @@ void GoToBagMenu(u8 location, u8 pocket, MainCallback exitCallback)
+ 
+ void CB2_BagMenuRun(void)
+ {
++#ifdef PLATFORM_3DS
++    CtrBag_Prefetch();
++#endif
+     RunTasks();
+     AnimateSprites();
+     BuildOamBuffer();
+@@ -1159,10 +1193,18 @@ u8 GetItemListPosition(u8 pocketId)
      return gBagPosition.scrollPosition[pocketId] + gBagPosition.cursorPosition[pocketId];
  }
  
@@ -4247,7 +4301,172 @@ index 09bc25c90b99e98c0097771871daa4384159047c..12a45a6fd8a12ab9834c204a65d9ba6d
      tMsgWindowId = AddItemMessageWindow(ITEMWIN_MESSAGE);
      FillWindowPixelBuffer(tMsgWindowId, PIXEL_FILL(1));
      DisplayMessageAndContinueTask(taskId, tMsgWindowId, 10, 13, fontId, GetPlayerTextSpeedDelay(), str, callback);
-@@ -2594,3 +2603,37 @@ static void PrintTMHMMoveData(u16 itemId)
+@@ -1242,6 +1284,10 @@ static void Task_BagMenu_HandleInput(u8 taskId)
+         }
+ 
+         listPosition = ListMenu_ProcessInput(tListTaskId);
++#ifdef PLATFORM_3DS
++        if (listPosition == LIST_NOTHING_CHOSEN && CtrBag_ListTouch(taskId, &listPosition))
++            return;
++#endif
+         ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
+         switch (listPosition)
+         {
+@@ -1456,6 +1502,11 @@ static void Task_HandleSwappingItemsInput(u8 taskId)
+             ListMenuGetScrollAndRow(tListTaskId, &gBagPosition.scrollPosition[gBagPosition.pocket], &gBagPosition.cursorPosition[gBagPosition.pocket]);
+             DoItemSwap(taskId);
+         }
++#ifdef PLATFORM_3DS
++        else if (CtrBag_SwapTouch(taskId))
++        {
++        }
++#endif
+         else
+         {
+             s32 input = ListMenu_ProcessInput(tListTaskId);
+@@ -1693,6 +1744,10 @@ static void Task_ItemContext_SingleRow(u8 taskId)
+     if (MenuHelpers_ShouldWaitForLinkRecv() != TRUE)
+     {
+         s8 selection = Menu_ProcessInputNoWrap();
++#ifdef PLATFORM_3DS
++        if (selection == MENU_NOTHING_CHOSEN)
++            CtrBag_ContextTouch(&selection);
++#endif
+         switch (selection)
+         {
+         case MENU_NOTHING_CHOSEN:
+@@ -1714,6 +1769,19 @@ static void Task_ItemContext_MultipleRows(u8 taskId)
+     if (MenuHelpers_ShouldWaitForLinkRecv() != TRUE)
+     {
+         s8 cursorPos = Menu_GetCursorPos();
++#ifdef PLATFORM_3DS
++        s8 tapped = MENU_NOTHING_CHOSEN;
++
++        if (CtrBag_ContextTouch(&tapped) && tapped != MENU_NOTHING_CHOSEN)
++        {
++            PlaySE(SE_SELECT);
++            if (tapped == MENU_B_PRESSED)
++                sItemMenuActions[ACTION_CANCEL].func.void_u8(taskId);
++            else
++                sItemMenuActions[gBagMenu->contextMenuItemsPtr[tapped]].func.void_u8(taskId);
++            return;
++        }
++#endif
+         if (JOY_NEW(DPAD_UP))
+         {
+             if (cursorPos > 0 && IsValidContextMenuPos(cursorPos - 2))
+@@ -1848,18 +1916,21 @@ static void CancelToss(u8 taskId)
+ static void Task_ChooseHowManyToToss(u8 taskId)
+ {
+     s16 *data = gTasks[taskId].data;
++#ifdef PLATFORM_3DS
++    u8 ctrTouch = CtrBag_QuantityTouch(&tItemCount, tQuantity, ITEMWIN_QUANTITY);
++#endif
+ 
+-    if (AdjustQuantityAccordingToDPadInput(&tItemCount, tQuantity) == TRUE)
++    if (AdjustQuantityAccordingToDPadInput(&tItemCount, tQuantity) == TRUE || BAG_TOUCHED(CHANGED))
+     {
+         PrintItemQuantity(gBagMenu->windowIds[ITEMWIN_QUANTITY], tItemCount);
+     }
+-    else if (JOY_NEW(A_BUTTON))
++    else if (JOY_NEW(A_BUTTON) || BAG_TOUCHED(OK))
+     {
+         PlaySE(SE_SELECT);
+         BagMenu_RemoveWindow(ITEMWIN_QUANTITY);
+         AskTossItems(taskId);
+     }
+-    else if (JOY_NEW(B_BUTTON))
++    else if (JOY_NEW(B_BUTTON) || BAG_TOUCHED(CANCEL))
+     {
+         PlaySE(SE_SELECT);
+         BagMenu_RemoveWindow(ITEMWIN_QUANTITY);
+@@ -1887,7 +1958,7 @@ static void Task_RemoveItemFromBag(u8 taskId)
+     u16 *scrollPos = &gBagPosition.scrollPosition[gBagPosition.pocket];
+     u16 *cursorPos = &gBagPosition.cursorPosition[gBagPosition.pocket];
+ 
+-    if (JOY_NEW(A_BUTTON | B_BUTTON))
++    if (BAG_ACK(A_BUTTON | B_BUTTON))
+     {
+         PlaySE(SE_SELECT);
+         RemoveBagItem(gSpecialVar_ItemId, tItemCount);
+@@ -1957,7 +2028,7 @@ static void PrintItemCantBeHeld(u8 taskId)
+ 
+ static void HandleErrorMessage(u8 taskId)
+ {
+-    if (JOY_NEW(A_BUTTON))
++    if (BAG_ACK(A_BUTTON))
+     {
+         PlaySE(SE_SELECT);
+         CloseItemMessage(taskId);
+@@ -2127,18 +2198,21 @@ static void InitSellHowManyInput(u8 taskId)
+ static void Task_ChooseHowManyToSell(u8 taskId)
+ {
+     s16 *data = gTasks[taskId].data;
++#ifdef PLATFORM_3DS
++    u8 ctrTouch = CtrBag_QuantityTouch(&tItemCount, tQuantity, ITEMWIN_QUANTITY_WIDE);
++#endif
+ 
+-    if (AdjustQuantityAccordingToDPadInput(&tItemCount, tQuantity) == TRUE)
++    if (AdjustQuantityAccordingToDPadInput(&tItemCount, tQuantity) == TRUE || BAG_TOUCHED(CHANGED))
+     {
+         PrintItemSoldAmount(gBagMenu->windowIds[ITEMWIN_QUANTITY_WIDE], tItemCount, (GetItemPrice(gSpecialVar_ItemId) / 2) * tItemCount);
+     }
+-    else if (JOY_NEW(A_BUTTON))
++    else if (JOY_NEW(A_BUTTON) || BAG_TOUCHED(OK))
+     {
+         PlaySE(SE_SELECT);
+         BagMenu_RemoveWindow(ITEMWIN_QUANTITY_WIDE);
+         DisplaySellItemPriceAndConfirm(taskId);
+     }
+-    else if (JOY_NEW(B_BUTTON))
++    else if (JOY_NEW(B_BUTTON) || BAG_TOUCHED(CANCEL))
+     {
+         PlaySE(SE_SELECT);
+         BagMenu_PrintCursor(tListTaskId, COLORID_NORMAL);
+@@ -2180,7 +2254,7 @@ static void SellItem(u8 taskId)
+ 
+ static void WaitAfterItemSell(u8 taskId)
+ {
+-    if (JOY_NEW(A_BUTTON | B_BUTTON))
++    if (BAG_ACK(A_BUTTON | B_BUTTON))
+     {
+         PlaySE(SE_SELECT);
+         RemoveMoneyWindow();
+@@ -2211,18 +2285,21 @@ static void Task_ItemContext_Deposit(u8 taskId)
+ static void Task_ChooseHowManyToDeposit(u8 taskId)
+ {
+     s16 *data = gTasks[taskId].data;
++#ifdef PLATFORM_3DS
++    u8 ctrTouch = CtrBag_QuantityTouch(&tItemCount, tQuantity, ITEMWIN_QUANTITY);
++#endif
+ 
+-    if (AdjustQuantityAccordingToDPadInput(&tItemCount, tQuantity) == TRUE)
++    if (AdjustQuantityAccordingToDPadInput(&tItemCount, tQuantity) == TRUE || BAG_TOUCHED(CHANGED))
+     {
+         PrintItemQuantity(gBagMenu->windowIds[ITEMWIN_QUANTITY], tItemCount);
+     }
+-    else if (JOY_NEW(A_BUTTON))
++    else if (JOY_NEW(A_BUTTON) || BAG_TOUCHED(OK))
+     {
+         PlaySE(SE_SELECT);
+         BagMenu_RemoveWindow(ITEMWIN_QUANTITY);
+         TryDepositItem(taskId);
+     }
+-    else if (JOY_NEW(B_BUTTON))
++    else if (JOY_NEW(B_BUTTON) || BAG_TOUCHED(CANCEL))
+     {
+         PlaySE(SE_SELECT);
+         PrintItemDescription(tListPosition);
+@@ -2264,7 +2341,7 @@ static void WaitDepositErrorMessage(u8 taskId)
+ {
+     s16 *data = gTasks[taskId].data;
+ 
+-    if (JOY_NEW(A_BUTTON | B_BUTTON))
++    if (BAG_ACK(A_BUTTON | B_BUTTON))
+     {
+         PlaySE(SE_SELECT);
+         PrintItemDescription(tListPosition);
+@@ -2594,3 +2671,361 @@ static void PrintTMHMMoveData(u16 itemId)
          CopyWindowToVram(WIN_TMHM_INFO, COPYWIN_GFX);
      }
  }
@@ -4285,10 +4504,334 @@ index 09bc25c90b99e98c0097771871daa4384159047c..12a45a6fd8a12ab9834c204a65d9ba6d
 +    return sCtrMessage;
 +}
 +#endif
++
++#ifdef PLATFORM_3DS
++//------------------------------------------------------------------------------
++//  Touch. 3ds_bottom_ui.c hands the bag its touches in pixels of the bag's
++//  own picture; a tap ends up in menu.c's tap (CtrMenu_PostTap), where the
++//  bag's tasks, its yes/no box and its messages take it. What a tap does is
++//  what the bag does for its button, called here directly.
++//------------------------------------------------------------------------------
++
++enum {
++    CTR_BAG_TOUCH_DOWN,
++    CTR_BAG_TOUCH_MOVE,
++    CTR_BAG_TOUCH_UP,
++    CTR_BAG_TOUCH_CANCEL, // the touch went to another screen
++};
++
++// The pocket name and its arrows, above the bag.
++#define CTR_POCKET_BOTTOM 36
++#define CTR_POCKET_RIGHT  112
++#define CTR_POCKET_SPLIT  64
++// The item list's window, its scroll arrows just above and below it.
++#define CTR_LIST_LEFT   112
++#define CTR_LIST_RIGHT  232
++#define CTR_LIST_TOP    16
++#define CTR_LIST_BOTTOM 144
++// A row held this long without moving is picked up to be moved.
++#define CTR_HOLD_FRAMES 30
++
++static struct {
++    bool8 held, dragged, used;
++    s16 x0, y0, x, y;
++    s16 applied; // steps of the drag already acted on
++    u16 frames;  // held without moving
++} sCtrTouch;
++
++void CtrMenu_PostTap(s16 x, s16 y);
++bool8 CtrMenu_TakeTap(s16 *x, s16 *y);
++s8 CtrMenu_EntryAt(s16 x, s16 y);
++s8 CtrMenu_Choose(s8 entry, bool8 sound);
++s16 CtrListMenu_RowAt(u8 listTaskId, s16 x, s16 y);
++void CtrListMenu_Select(u8 listTaskId, u16 row);
++s16 CtrListMenu_Scroll(u8 listTaskId, s16 rows);
++
++bool8 CtrBag_IsOpen(void)
++{
++    return gBagMenu != NULL && gMain.callback2 == CB2_BagMenuRun;
++}
++
++void CtrBag_Touch(u8 phase, s16 x, s16 y)
++{
++    switch (phase)
++    {
++    case CTR_BAG_TOUCH_DOWN:
++        memset(&sCtrTouch, 0, sizeof(sCtrTouch));
++        sCtrTouch.held = TRUE;
++        sCtrTouch.x0 = sCtrTouch.x = x;
++        sCtrTouch.y0 = sCtrTouch.y = y;
++        break;
++    case CTR_BAG_TOUCH_MOVE:
++        if (!sCtrTouch.held)
++            break;
++        sCtrTouch.x = x;
++        sCtrTouch.y = y;
++        if (x - sCtrTouch.x0 > 8 || sCtrTouch.x0 - x > 8 || y - sCtrTouch.y0 > 8 || sCtrTouch.y0 - y > 8)
++            sCtrTouch.dragged = TRUE;
++        break;
++    case CTR_BAG_TOUCH_UP:
++        if (!sCtrTouch.held)
++            break;
++        sCtrTouch.held = FALSE;
++        if (!sCtrTouch.dragged && !sCtrTouch.used)
++            CtrMenu_PostTap(sCtrTouch.x, sCtrTouch.y);
++        break;
++    case CTR_BAG_TOUCH_CANCEL:
++        sCtrTouch.held = FALSE;
++        break;
++    }
++}
++
++// The column's BAG button, while the list takes input: the bag closes, as B
++// or CLOSE BAG closes it.
++bool8 CtrBag_Close(void)
++{
++    u8 taskId = FindTaskIdByFunc(Task_BagMenu_HandleInput);
++
++    if (!CtrBag_IsOpen() || taskId == TASK_NONE || gPaletteFade.active || MenuHelpers_ShouldWaitForLinkRecv() == TRUE)
++        return FALSE;
++    if (gBagPosition.location == ITEMMENULOCATION_BERRY_BLENDER_CRUSH)
++    {
++        PlaySE(SE_FAILURE);
++        return FALSE;
++    }
++    PlaySE(SE_SELECT);
++    gSpecialVar_ItemId = ITEM_NONE;
++    gTasks[taskId].func = Task_FadeAndCloseBagMenu;
++    return TRUE;
++}
++
++// How many steps of step pixels the finger has gone up since it was last
++// asked (down: fewer than 0).
++static s16 CtrBag_DragSteps(s16 step)
++{
++    s16 total = (sCtrTouch.y0 - sCtrTouch.y) / step;
++    s16 steps = total - sCtrTouch.applied;
++
++    sCtrTouch.applied = total;
++    return steps;
++}
++
++static bool8 CtrBag_InList(s16 x, s16 y)
++{
++    return x >= CTR_LIST_LEFT && x < CTR_LIST_RIGHT && y >= CTR_LIST_TOP - 8 && y < CTR_LIST_BOTTOM + 8;
++}
++
++// Dragging the list scrolls it, a row a row's height. TRUE while it does.
++static bool8 CtrBag_DragList(u8 listTaskId)
++{
++    s16 steps;
++
++    if (!sCtrTouch.held || !sCtrTouch.dragged || !CtrBag_InList(sCtrTouch.x0, sCtrTouch.y0))
++        return FALSE;
++    steps = CtrBag_DragSteps(GetFontAttribute(FONT_NARROW, FONTATTR_MAX_LETTER_HEIGHT));
++    if (steps != 0)
++        CtrListMenu_Scroll(listTaskId, steps);
++    return TRUE;
++}
++
++// The item list. TRUE when the task must return, having switched the pocket
++// or started moving an item; otherwise *listPosition is what A would have
++// chosen, or LIST_NOTHING_CHOSEN.
++static bool8 CtrBag_ListTouch(u8 taskId, s32 *listPosition)
++{
++    s16 *data = gTasks[taskId].data;
++    u16 *scrollPos = &gBagPosition.scrollPosition[gBagPosition.pocket];
++    u16 *cursorPos = &gBagPosition.cursorPosition[gBagPosition.pocket];
++    s16 x, y, row;
++
++    if (CtrBag_DragList(tListTaskId))
++        return FALSE;
++    // Held still on a row: that item is picked up to move, as SELECT does.
++    if (sCtrTouch.held)
++    {
++        if (!sCtrTouch.dragged && !sCtrTouch.used && ++sCtrTouch.frames >= CTR_HOLD_FRAMES
++         && (row = CtrListMenu_RowAt(tListTaskId, sCtrTouch.x0, sCtrTouch.y0)) >= 0)
++        {
++            sCtrTouch.used = TRUE;
++            if (CanSwapItems() == TRUE)
++            {
++                CtrListMenu_Select(tListTaskId, row);
++                ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
++                if ((*scrollPos + *cursorPos) != gBagMenu->numItemStacks[gBagPosition.pocket] - 1)
++                {
++                    PlaySE(SE_SELECT);
++                    StartItemSwap(taskId);
++                    return TRUE;
++                }
++            }
++        }
++        return FALSE;
++    }
++    if (!CtrMenu_TakeTap(&x, &y))
++        return FALSE;
++    // The pocket name: its left half is the previous pocket, its right the next.
++    if (y < CTR_POCKET_BOTTOM && x < CTR_POCKET_RIGHT)
++    {
++        if (gBagMenu->pocketSwitchDisabled)
++            return FALSE;
++        PlaySE(SE_SELECT);
++        SwitchBagPocket(taskId, x < CTR_POCKET_SPLIT ? MENU_CURSOR_DELTA_LEFT : MENU_CURSOR_DELTA_RIGHT, FALSE);
++        return TRUE;
++    }
++    // The scroll arrows: a page up or down.
++    if (x >= CTR_LIST_LEFT && x < CTR_LIST_RIGHT && (y < CTR_LIST_TOP || y >= CTR_LIST_BOTTOM))
++    {
++        s16 page = gBagMenu->numShownItems[gBagPosition.pocket];
++
++        CtrListMenu_Scroll(tListTaskId, y < CTR_LIST_TOP ? -page : page);
++        return FALSE;
++    }
++    // A row: the cursor goes to it; on the cursor's row, it is chosen.
++    row = CtrListMenu_RowAt(tListTaskId, x, y);
++    if (row < 0)
++        return FALSE;
++    ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
++    if (row != *cursorPos)
++        CtrListMenu_Select(tListTaskId, row);
++    else
++        *listPosition = sListBuffer1->subBuffers[*scrollPos + row].id;
++    return FALSE;
++}
++
++// Moving an item: a tap on a row puts it there, anywhere else leaves it.
++static bool8 CtrBag_SwapTouch(u8 taskId)
++{
++    s16 *data = gTasks[taskId].data;
++    u16 *scrollPos = &gBagPosition.scrollPosition[gBagPosition.pocket];
++    u16 *cursorPos = &gBagPosition.cursorPosition[gBagPosition.pocket];
++    s16 x, y, row;
++
++    if (CtrBag_DragList(tListTaskId))
++    {
++        ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
++        SetItemMenuSwapLineInvisibility(FALSE);
++        UpdateItemMenuSwapLinePos(*cursorPos);
++        return TRUE;
++    }
++    if (sCtrTouch.held || !CtrMenu_TakeTap(&x, &y))
++        return FALSE;
++    row = CtrListMenu_RowAt(tListTaskId, x, y);
++    PlaySE(SE_SELECT);
++    if (row < 0)
++    {
++        ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
++        CancelItemSwap(taskId);
++        return TRUE;
++    }
++    CtrListMenu_Select(tListTaskId, row);
++    ListMenuGetScrollAndRow(tListTaskId, scrollPos, cursorPos);
++    DoItemSwap(taskId);
++    return TRUE;
++}
++
++// The item's menu (USE, GIVE, TOSS...): the entry tapped, as A chooses it;
++// away from the menu, B. TRUE when a tap was taken.
++static bool8 CtrBag_ContextTouch(s8 *selection)
++{
++    s16 x, y;
++    s8 entry;
++
++    if (!CtrMenu_TakeTap(&x, &y))
++        return FALSE;
++    entry = CtrMenu_EntryAt(x, y);
++    if (entry < 0)
++        *selection = MENU_B_PRESSED;
++    else if (IsValidContextMenuPos(entry))
++        *selection = CtrMenu_Choose(entry, FALSE);
++    return TRUE;
++}
++
++// How many: dragging up or down counts up or down, one every 8 pixels; a
++// tap on the number is A, anywhere else B.
++static u8 CtrBag_QuantityTouch(s16 *count, u16 max, u8 windowType)
++{
++    u8 windowId = gBagMenu->windowIds[windowType];
++    s16 x, y, left, top, steps, value;
++
++    if (sCtrTouch.held)
++    {
++        if (!sCtrTouch.dragged || (steps = CtrBag_DragSteps(8)) == 0)
++            return CTR_QUANTITY_NONE;
++        value = *count + steps;
++        if (value > (s16)max)
++            value = max;
++        if (value < 1)
++            value = 1;
++        if (value == *count)
++            return CTR_QUANTITY_NONE;
++        *count = value;
++        PlaySE(SE_SELECT);
++        return CTR_QUANTITY_CHANGED;
++    }
++    if (windowId == WINDOW_NONE || !CtrMenu_TakeTap(&x, &y))
++        return CTR_QUANTITY_NONE;
++    // The window with its frame.
++    left = GetWindowAttribute(windowId, WINDOW_TILEMAP_LEFT) * 8 - 8;
++    top = GetWindowAttribute(windowId, WINDOW_TILEMAP_TOP) * 8 - 8;
++    if (x >= left && x < left + (s16)GetWindowAttribute(windowId, WINDOW_WIDTH) * 8 + 16
++     && y >= top && y < top + (s16)GetWindowAttribute(windowId, WINDOW_HEIGHT) * 8 + 16)
++        return CTR_QUANTITY_OK;
++    return CTR_QUANTITY_CANCEL;
++}
++
++//------------------------------------------------------------------------------
++//  Reading ahead. An item's icon is read off the SD card the first time the
++//  cursor reaches it, milliseconds on a console. While the bag waits for
++//  input the icons of every pocket, the one on show first, are read ahead
++//  into the asset cache, one read a frame.
++//------------------------------------------------------------------------------
++
++static struct {
++    u8 pocket, fromPocket;
++    u16 slot;
++} sCtrPrefetch = {0, 0xFF, 0};
++
++static bool8 CtrBag_Read(const void *ptr)
++{
++    u32 misses = CtrAssets_GetStats()->misses;
++
++    if (ptr != NULL)
++        Port_ResolveAssetPointer(ptr);
++    return CtrAssets_GetStats()->misses != misses;
++}
++
++static void CtrBag_Prefetch(void)
++{
++    if (gBagMenu == NULL || FindTaskIdByFunc(Task_BagMenu_HandleInput) == TASK_NONE || gPaletteFade.active)
++        return;
++    if (sCtrPrefetch.fromPocket != gBagPosition.pocket)
++    {
++        sCtrPrefetch.fromPocket = gBagPosition.pocket;
++        sCtrPrefetch.pocket = 0;
++        sCtrPrefetch.slot = 0;
++    }
++    while (sCtrPrefetch.pocket < POCKETS_COUNT)
++    {
++        u8 pocketId = (gBagPosition.pocket + sCtrPrefetch.pocket) % POCKETS_COUNT;
++        struct BagPocket *pocket = &gBagPockets[pocketId];
++        u16 itemId;
++        bool8 read;
++
++        if (sCtrPrefetch.slot >= pocket->capacity || pocket->itemSlots[sCtrPrefetch.slot].itemId == ITEM_NONE)
++        {
++            sCtrPrefetch.pocket++;
++            sCtrPrefetch.slot = 0;
++            continue;
++        }
++        itemId = pocket->itemSlots[sCtrPrefetch.slot++].itemId;
++        read = CtrBag_Read(GetItemIconPicOrPalette(itemId, 0));
++        read |= CtrBag_Read(GetItemIconPicOrPalette(itemId, 1));
++        if (read)
++            return;
++    }
++}
++#endif
 diff --git a/src/item_use.c b/src/item_use.c
 old mode 100755
 new mode 100644
-index b7bf458a995e1b2ca6458f23c9d371fbe099f99c..6ae235675a90b1ed07f3b80fd5f2bcdea84e2e29
+index b7bf458a995e1b2ca6458f23c9d371fbe099f99c..6752b4d96ac9819dd935bcee32c7b2855ba382d6
 --- a/src/item_use.c
 +++ b/src/item_use.c
 @@ -72,7 +72,7 @@ static void SetDistanceOfClosestHiddenItem(u8, s16, s16);
@@ -4300,6 +4843,35 @@ index b7bf458a995e1b2ca6458f23c9d371fbe099f99c..6ae235675a90b1ed07f3b80fd5f2bcde
  
  // Below is set TRUE by UseRegisteredKeyItemOnField
  #define tUsingRegisteredKeyItem  data[3]
+@@ -800,9 +800,18 @@ static void BootUpSoundTMHM(u8 taskId)
+     gTasks[taskId].func = Task_ShowTMHMContainedMessage;
+ }
+ 
++#ifdef PLATFORM_3DS
++// menu.c: a tap on the bag, where it is shown on the 3DS bottom screen, goes
++// on with a message as A or B would.
++bool8 CtrMenu_TakeAck(void);
++#define ITEM_USE_ACK(keys) (JOY_NEW(keys) || CtrMenu_TakeAck())
++#else
++#define ITEM_USE_ACK(keys) JOY_NEW(keys)
++#endif
++
+ static void Task_ShowTMHMContainedMessage(u8 taskId)
+ {
+-    if (JOY_NEW(A_BUTTON | B_BUTTON))
++    if (ITEM_USE_ACK(A_BUTTON | B_BUTTON))
+     {
+         StringCopy(gStringVar1, gMoveNames[ItemIdToBattleMoveId(gSpecialVar_ItemId)]);
+         StringExpandPlaceholders(gStringVar4, gText_TMHMContainedVar1);
+@@ -968,7 +977,7 @@ void ItemUseInBattle_PokeBall(u8 taskId)
+ 
+ static void Task_CloseStatIncreaseMessage(u8 taskId)
+ {
+-    if (JOY_NEW(A_BUTTON | B_BUTTON))
++    if (ITEM_USE_ACK(A_BUTTON | B_BUTTON))
+     {
+         if (CurrentBattlePyramidLocation() == PYRAMID_LOCATION_NONE)
+             Task_FadeAndCloseBagMenu(taskId);
 diff --git a/src/landmark.c b/src/landmark.c
 index a8cf6c123362e0e1e485ba680e3be44c105be2ed..d2bb3c4105a7bf42929a1b45a5d575d463408627 100644
 --- a/src/landmark.c
@@ -4501,7 +5073,7 @@ index 6b20cf96781496274fcbdbe6a45064c9450f406f..595e5a365aba1ac5ddb1cc1687ebf68a
  static void Task_ParentSearchForChildren(u8 taskId)
  {
 diff --git a/src/list_menu.c b/src/list_menu.c
-index 6929b20b42b235bf9eb49a8c07cb62f28ccb27c8..8257712a0aab7ff1ab736ec53c63253353bbd60a 100644
+index 6929b20b42b235bf9eb49a8c07cb62f28ccb27c8..5a546d3567a2f13f5a95ba59cdc7b6ae8fe3b97d 100644
 --- a/src/list_menu.c
 +++ b/src/list_menu.c
 @@ -13,10 +13,6 @@
@@ -4515,6 +5087,76 @@ index 6929b20b42b235bf9eb49a8c07cb62f28ccb27c8..8257712a0aab7ff1ab736ec53c632533
  // Cursors after this point are created using a sprite with their own task.
  // This allows them to have idle animations. Cursors prior to this are simply printed text.
  #define CURSOR_OBJECT_START CURSOR_RED_OUTLINE
+@@ -1445,3 +1441,69 @@ static void ListMenuRemoveRedArrowCursorObject(u8 taskId)
+     DestroySprite(&gSprites[data->spriteId]);
+     DestroyTask(taskId);
+ }
++
++#ifdef PLATFORM_3DS
++// Taps on a list shown on the 3DS bottom screen (the bag), which act on the
++// list directly: its row under a point, the selection put on a row, the list
++// scrolled by rows. What each does on screen is what the D-pad's moves do.
++
++// The row shown under (x, y), in pixels of the screen the list's window is
++// on; -1 when the point is not on a row.
++s16 CtrListMenu_RowAt(u8 listTaskId, s16 x, s16 y)
++{
++    struct ListMenu *list = (void *) gTasks[listTaskId].data;
++    u8 yMultiplier = GetFontAttribute(list->template.fontId, FONTATTR_MAX_LETTER_HEIGHT) + list->template.itemVerticalPadding;
++    s16 left = GetWindowAttribute(list->template.windowId, WINDOW_TILEMAP_LEFT) * 8;
++    s16 top = GetWindowAttribute(list->template.windowId, WINDOW_TILEMAP_TOP) * 8 + list->template.upText_Y;
++    s16 width = GetWindowAttribute(list->template.windowId, WINDOW_WIDTH) * 8;
++    s16 row;
++
++    if (x < left || x >= left + width || y < top || yMultiplier == 0)
++        return -1;
++    row = (y - top) / yMultiplier;
++    if (row >= list->template.maxShowed || list->scrollOffset + row >= list->template.totalItems)
++        return -1;
++    return row;
++}
++
++// The selection on the row shown at row, as if the cursor had moved there.
++void CtrListMenu_Select(u8 listTaskId, u16 row)
++{
++    struct ListMenu *list = (void *) gTasks[listTaskId].data;
++    u16 oldRow = list->selectedRow;
++
++    if (row == oldRow || row >= list->template.maxShowed || list->template.items[list->scrollOffset + row].id == LIST_HEADER)
++        return;
++    list->selectedRow = row;
++    ListMenuErasePrintedCursor(list, oldRow);
++    ListMenuDrawCursor(list);
++    ListMenuCallSelectionChangedCallback(list, FALSE);
++    CopyWindowToVram(list->template.windowId, COPYWIN_GFX);
++}
++
++// The list scrolled by rows (down for more than 0), the selection staying on
++// the row it is on. Returns the rows it moved, fewer at either end.
++s16 CtrListMenu_Scroll(u8 listTaskId, s16 rows)
++{
++    struct ListMenu *list = (void *) gTasks[listTaskId].data;
++    s32 maxScroll = list->template.totalItems - list->template.maxShowed;
++    s32 scroll = list->scrollOffset + rows;
++
++    if (scroll > maxScroll)
++        scroll = maxScroll;
++    if (scroll < 0)
++        scroll = 0;
++    rows = scroll - list->scrollOffset;
++    if (rows == 0)
++        return 0;
++    ListMenuErasePrintedCursor(list, list->selectedRow);
++    list->scrollOffset = scroll;
++    if (list->template.items[list->scrollOffset + list->selectedRow].id == LIST_HEADER)
++        list->selectedRow = rows > 0 ? list->selectedRow + 1 : list->selectedRow - 1;
++    ListMenuScroll(list, rows > 0 ? rows : -rows, rows > 0);
++    ListMenuDrawCursor(list);
++    ListMenuCallSelectionChangedCallback(list, FALSE);
++    CopyWindowToVram(list->template.windowId, COPYWIN_GFX);
++    return rows;
++}
++#endif
 diff --git a/src/load_save.c b/src/load_save.c
 index 117ba3e27c8d6284a164e04492a55e4303c2374e..715991ab4ce3d4b5dd1ef1e4977ef831d108c34e 100644
 --- a/src/load_save.c
@@ -6041,7 +6683,7 @@ index f77c82608a3758f56be66c67f9b7f6af79d9dc2a..6162dbf47b48e1217a757fee69aca22b
      x = 0x10000;
      return x / y;
 diff --git a/src/menu.c b/src/menu.c
-index dd43e310dc8c83c350a0bb714113cc95cc46969e..46cfe457df639bf506eedbbb903c149c7e3617f1 100644
+index dd43e310dc8c83c350a0bb714113cc95cc46969e..86d487b3676c8227922c1007e833a127013a0b79 100644
 --- a/src/menu.c
 +++ b/src/menu.c
 @@ -20,6 +20,11 @@
@@ -6290,7 +6932,7 @@ index dd43e310dc8c83c350a0bb714113cc95cc46969e..46cfe457df639bf506eedbbb903c149c
  }
  
  void BufferSaveMenuText(u8 textId, u8 *dest, u8 color)
-@@ -2145,3 +2272,38 @@ void BufferSaveMenuText(u8 textId, u8 *dest, u8 color)
+@@ -2145,3 +2272,115 @@ void BufferSaveMenuText(u8 textId, u8 *dest, u8 color)
              break;
      }
  }
@@ -6302,18 +6944,30 @@ index dd43e310dc8c83c350a0bb714113cc95cc46969e..46cfe457df639bf506eedbbb903c149c
 +    return sCtrYesNoOpen;
 +}
 +
-+// The entry of the open one-column menu under (x, y), in pixels of the
-+// screen its window is on; -1 when the point is not on one of its rows.
++// The entry of the open menu under (x, y), in pixels of the screen its window
++// is on; -1 when the point is not on one of its entries. A grid's entries go
++// row by row, as its cursor counts them.
 +s8 CtrMenu_EntryAt(s16 x, s16 y)
 +{
 +    s16 left = GetWindowAttribute(sMenu.windowId, WINDOW_TILEMAP_LEFT) * 8;
 +    s16 top = GetWindowAttribute(sMenu.windowId, WINDOW_TILEMAP_TOP) * 8 + sMenu.top;
 +    s16 width = GetWindowAttribute(sMenu.windowId, WINDOW_WIDTH) * 8;
-+    s16 row;
++    s16 row, column = 0;
 +
-+    if (sMenu.optionHeight == 0 || sMenu.columns > 1 || x < left || x >= left + width || y < top)
++    if (sMenu.optionHeight == 0 || x < left || x >= left + width || y < top)
 +        return -1;
 +    row = (y - top) / sMenu.optionHeight;
++    if (sMenu.columns > 1)
++    {
++        if (sMenu.optionWidth == 0 || row >= sMenu.rows)
++            return -1;
++        column = (x - left - sMenu.left) / sMenu.optionWidth;
++        if (column < 0)
++            column = 0;
++        if (column >= sMenu.columns)
++            column = sMenu.columns - 1;
++        row = row * sMenu.columns + column;
++    }
 +    if (row < sMenu.minCursorPos || row > sMenu.maxCursorPos)
 +        return -1;
 +    return row;
@@ -6323,12 +6977,100 @@ index dd43e310dc8c83c350a0bb714113cc95cc46969e..46cfe457df639bf506eedbbb903c149c
 +// chooses it (with its sound where the menu makes one).
 +s8 CtrMenu_Choose(s8 entry, bool8 sound)
 +{
-+    Menu_MoveCursorNoWrapAround(entry - sMenu.cursorPos);
++    if (sMenu.columns > 1)
++    {
++        u8 old = sMenu.cursorPos;
++
++        sMenu.cursorPos = entry;
++        MoveMenuGridCursor(old, entry);
++    }
++    else
++    {
++        Menu_MoveCursorNoWrapAround(entry - sMenu.cursorPos);
++    }
 +    if (sound && !sMenu.APressMuted)
 +        PlaySE(SE_SELECT);
 +    return sMenu.cursorPos;
 +}
++
++// A tap on a game screen shown on the 3DS bottom screen (the bag), in pixels
++// of that screen, for whatever waits for input there to take: a menu, a
++// yes/no box, a message waiting to go on. A tap nothing took for half a
++// second is dropped, so it does not act later on something else.
++static struct {
++    bool8 pending;
++    s16 x, y;
++    u32 frame;
++} sCtrTap;
++
++void CtrMenu_PostTap(s16 x, s16 y)
++{
++    sCtrTap.pending = TRUE;
++    sCtrTap.x = x;
++    sCtrTap.y = y;
++    sCtrTap.frame = gMain.vblankCounter1;
++}
++
++bool8 CtrMenu_TakeTap(s16 *x, s16 *y)
++{
++    if (!sCtrTap.pending)
++        return FALSE;
++    sCtrTap.pending = FALSE;
++    if (gMain.vblankCounter1 - sCtrTap.frame > 30)
++        return FALSE;
++    *x = sCtrTap.x;
++    *y = sCtrTap.y;
++    return TRUE;
++}
++
++// A message waiting for A or B: any tap goes on.
++bool8 CtrMenu_TakeAck(void)
++{
++    s16 x, y;
++
++    return CtrMenu_TakeTap(&x, &y);
++}
++
++// A yes/no box: YES or NO tapped is chosen, a tap away from it is B.
++s8 CtrMenu_YesNoInput(void)
++{
++    s16 x, y;
++    s8 entry;
++
++    if (!CtrMenu_TakeTap(&x, &y))
++        return Menu_ProcessInputNoWrapClearOnChoose();
++    entry = CtrMenu_EntryAt(x, y);
++    if (entry >= 0)
++        CtrMenu_Choose(entry, TRUE);
++    else
++        entry = MENU_B_PRESSED;
++    EraseYesNoWindow();
++    return entry;
++}
 +#endif
+diff --git a/src/menu_helpers.c b/src/menu_helpers.c
+index 04e7f061b4c0c098c111701108ae2b3aed2bb016..13b4ac3fdd81867c00922546edead58276d8254a 100644
+--- a/src/menu_helpers.c
++++ b/src/menu_helpers.c
+@@ -160,9 +160,18 @@ void CreateYesNoMenuWithCallbacks(u8 taskId, const struct WindowTemplate *templa
+     gTasks[taskId].func = Task_CallYesOrNoCallback;
+ }
+ 
++#ifdef PLATFORM_3DS
++// menu.c: YES or NO tapped on the 3DS bottom screen, where the bag is shown.
++s8 CtrMenu_YesNoInput(void);
++#endif
++
+ static void Task_CallYesOrNoCallback(u8 taskId)
+ {
++#ifdef PLATFORM_3DS
++    switch (CtrMenu_YesNoInput())
++#else
+     switch (Menu_ProcessInputNoWrapClearOnChoose())
++#endif
+     {
+     case 0:
+         PlaySE(SE_SELECT);
 diff --git a/src/mon_markings.c b/src/mon_markings.c
 index 1de8e413fd09bc2e8008c79ab21f93f4fd54b302..c27fadb273075a5a01c5910560897f7036bc0324 100644
 --- a/src/mon_markings.c
@@ -7165,6 +7907,44 @@ index 7cde1a018c33c86da6ede1b0e7d3259869774cb0..1868e100ff212460f6912e5bbe59a5d3
 +    return sCtrMessage;
 +}
 +#endif
+diff --git a/src/player_pc.c b/src/player_pc.c
+index 43239582ce6cb1653a489f55cf9048c0eb9bc018..50f6fd4e7a2b60efd5f5b2878bc208db5197fd75 100644
+--- a/src/player_pc.c
++++ b/src/player_pc.c
+@@ -552,10 +552,33 @@ static void ItemStorageMenuProcessInput(u8 taskId)
+     }
+ }
+ 
++#ifdef PLATFORM_3DS
++// 3ds_bottom_ui.c: the top screen keeps the world from now until the field
++// is back, while the bag is on the bottom screen.
++void CtrBottom_KeepWorld(void);
++
++static void Task_ItemStorage_CtrFadeOut(u8 taskId)
++{
++    CtrBottom_KeepWorld();
++    gTasks[taskId].func = Task_ItemStorage_Deposit;
++    FadeScreen(FADE_TO_BLACK, 0);
++}
++#endif
++
+ static void ItemStorage_Deposit(u8 taskId)
+ {
++#ifdef PLATFORM_3DS
++    // The top screen is to be left showing the world, so the menu goes
++    // first and the fade starts on the next frame.
++    s16 *data = gTasks[taskId].data;
++
++    ClearStdWindowAndFrame(tWindowId, TRUE);
++    ClearDialogWindowAndFrame(0, TRUE);
++    gTasks[taskId].func = Task_ItemStorage_CtrFadeOut;
++#else
+     gTasks[taskId].func = Task_ItemStorage_Deposit;
+     FadeScreen(FADE_TO_BLACK, 0);
++#endif
+ }
+ 
+ static void Task_ItemStorage_Deposit(u8 taskId)
 diff --git a/src/pokeball.c b/src/pokeball.c
 index 5bbeb5c96a7dfbaccbb29506ea62a04976525cd5..2caeeb29769e3ce03309a97320fb8e4832687d0b 100644
 --- a/src/pokeball.c
@@ -10678,7 +11458,7 @@ index 41b0f78339980006459101ae31b7e688a0252ad3..cc3ec73be77343d6d55961f00e67a576
                  *x = i;
                  *y = j;
 diff --git a/src/shop.c b/src/shop.c
-index c6e78817eb3263af3a35b8778353ca492324772c..e2753b64dfb4cdf6695a206cf24875c8b70b9347 100644
+index c6e78817eb3263af3a35b8778353ca492324772c..071db103443123b18939a43e62744181708abfb0 100644
 --- a/src/shop.c
 +++ b/src/shop.c
 @@ -33,6 +33,9 @@
@@ -10691,7 +11471,42 @@ index c6e78817eb3263af3a35b8778353ca492324772c..e2753b64dfb4cdf6695a206cf24875c8
  #include "constants/decorations.h"
  #include "constants/items.h"
  #include "constants/metatile_behaviors.h"
-@@ -455,7 +458,7 @@ static void Task_GoToBuyOrSellMenu(u8 taskId)
+@@ -422,13 +425,34 @@ static void Task_HandleShopMenuBuy(u8 taskId)
+     FadeScreen(FADE_TO_BLACK, 0);
+ }
+ 
++#ifdef PLATFORM_3DS
++// 3ds_bottom_ui.c: the top screen keeps the world from now until the field
++// is back, while the bag is on the bottom screen.
++void CtrBottom_KeepWorld(void);
++
++static void Task_CtrSellFadeOut(u8 taskId)
++{
++    CtrBottom_KeepWorld();
++    gTasks[taskId].func = Task_GoToBuyOrSellMenu;
++    FadeScreen(FADE_TO_BLACK, 0);
++}
++#endif
++
+ static void Task_HandleShopMenuSell(u8 taskId)
+ {
+     s16 *data = gTasks[taskId].data;
+     tCallbackHi = (u32)CB2_GoToSellMenu >> 16;
+     tCallbackLo = (u32)CB2_GoToSellMenu;
++#ifdef PLATFORM_3DS
++    // The bag to sell from is on the bottom screen: the menu goes first, and
++    // the top screen keeps the world through the fade, on the next frame.
++    ClearStdWindowAndFrame(sMartInfo.windowId, TRUE);
++    ClearDialogWindowAndFrame(0, TRUE);
++    gTasks[taskId].func = Task_CtrSellFadeOut;
++#else
+     gTasks[taskId].func = Task_GoToBuyOrSellMenu;
+     FadeScreen(FADE_TO_BLACK, 0);
++#endif
+ }
+ 
+ void CB2_ExitSellMenu(void)
+@@ -455,7 +479,7 @@ static void Task_GoToBuyOrSellMenu(u8 taskId)
      if (!gPaletteFade.active)
      {
          DestroyTask(taskId);
@@ -10700,7 +11515,7 @@ index c6e78817eb3263af3a35b8778353ca492324772c..e2753b64dfb4cdf6695a206cf24875c8
      }
  }
  
-@@ -1248,6 +1251,9 @@ static void RecordItemPurchase(u8 taskId)
+@@ -1248,6 +1272,9 @@ static void RecordItemPurchase(u8 taskId)
  
  void CreatePokemartMenu(const u16 *itemsForSale)
  {
@@ -10710,7 +11525,7 @@ index c6e78817eb3263af3a35b8778353ca492324772c..e2753b64dfb4cdf6695a206cf24875c8
      CreateShopMenu(MART_TYPE_NORMAL);
      SetShopItemsForSale(itemsForSale);
      ClearItemPurchases();
-@@ -1256,6 +1262,9 @@ void CreatePokemartMenu(const u16 *itemsForSale)
+@@ -1256,6 +1283,9 @@ void CreatePokemartMenu(const u16 *itemsForSale)
  
  void CreateDecorationShop1Menu(const u16 *itemsForSale)
  {
@@ -10720,7 +11535,7 @@ index c6e78817eb3263af3a35b8778353ca492324772c..e2753b64dfb4cdf6695a206cf24875c8
      CreateShopMenu(MART_TYPE_DECOR);
      SetShopItemsForSale(itemsForSale);
      SetShopMenuCallback(ScriptContext_Enable);
-@@ -1263,6 +1272,9 @@ void CreateDecorationShop1Menu(const u16 *itemsForSale)
+@@ -1263,6 +1293,9 @@ void CreateDecorationShop1Menu(const u16 *itemsForSale)
  
  void CreateDecorationShop2Menu(const u16 *itemsForSale)
  {
@@ -12141,7 +12956,7 @@ index b188cbbcba75744b034677173b363e930f201c79..fd819337fefe3e05eef277cf585eab73
  
      return count;
 diff --git a/src/text.c b/src/text.c
-index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc5558152308c 100644
+index 1c8a64d5c7d34936f825764126ba6c40cac4c959..b91830b6e7c97368c31f447b3d0adcb3ad3e61e2 100644
 --- a/src/text.c
 +++ b/src/text.c
 @@ -12,6 +12,9 @@
@@ -12212,7 +13027,72 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
  
      temp = *(src++);
      *(dest)++ = ((sFontHalfRowLookupTable[sFontHalfRowOffsets[temp & 0xFF]]) << 16) | (sFontHalfRowLookupTable[sFontHalfRowOffsets[temp >> 8]]);
-@@ -1239,7 +1266,11 @@ static u32 UNUSED GetStringWidthFixedWidthFont(const u8 *str, u8 fontId, u8 lett
+@@ -862,6 +889,20 @@ bool8 TextPrinterWaitAutoMode(struct TextPrinter *textPrinter)
+     }
+ }
+ 
++#ifdef PLATFORM_3DS
++// menu.c: a tap on a game screen shown on the 3DS bottom screen (the bag),
++// which goes on with a message as A or B would.
++bool8 CtrMenu_TakeAck(void);
++#define TEXT_AB_NEW() (JOY_NEW(A_BUTTON | B_BUTTON) || CtrMenu_TakeAck())
++// A tap that sped a message up keeps it going fast, as A held would, until
++// the message waits.
++static bool8 sCtrTextHurry;
++#define TEXT_AB_HELD() (JOY_HELD(A_BUTTON | B_BUTTON) || sCtrTextHurry)
++#else
++#define TEXT_AB_NEW() JOY_NEW(A_BUTTON | B_BUTTON)
++#define TEXT_AB_HELD() JOY_HELD(A_BUTTON | B_BUTTON)
++#endif
++
+ bool16 TextPrinterWaitWithDownArrow(struct TextPrinter *textPrinter)
+ {
+     bool8 result = FALSE;
+@@ -872,7 +913,10 @@ bool16 TextPrinterWaitWithDownArrow(struct TextPrinter *textPrinter)
+     else
+     {
+         TextPrinterDrawDownArrow(textPrinter);
+-        if (JOY_NEW(A_BUTTON | B_BUTTON))
++#ifdef PLATFORM_3DS
++        sCtrTextHurry = FALSE;
++#endif
++        if (TEXT_AB_NEW())
+         {
+             result = TRUE;
+             PlaySE(SE_SELECT);
+@@ -890,7 +934,10 @@ bool16 TextPrinterWait(struct TextPrinter *textPrinter)
+     }
+     else
+     {
+-        if (JOY_NEW(A_BUTTON | B_BUTTON))
++#ifdef PLATFORM_3DS
++        sCtrTextHurry = FALSE;
++#endif
++        if (TEXT_AB_NEW())
+         {
+             result = TRUE;
+             PlaySE(SE_SELECT);
+@@ -941,14 +988,17 @@ static u16 RenderText(struct TextPrinter *textPrinter)
+     switch (textPrinter->state)
+     {
+     case RENDER_STATE_HANDLE_CHAR:
+-        if (JOY_HELD(A_BUTTON | B_BUTTON) && subStruct->hasPrintBeenSpedUp)
++        if (TEXT_AB_HELD() && subStruct->hasPrintBeenSpedUp)
+             textPrinter->delayCounter = 0;
+ 
+         if (textPrinter->delayCounter && textPrinter->textSpeed)
+         {
+             textPrinter->delayCounter--;
+-            if (gTextFlags.canABSpeedUpPrint && (JOY_NEW(A_BUTTON | B_BUTTON)))
++            if (gTextFlags.canABSpeedUpPrint && TEXT_AB_NEW())
+             {
++#ifdef PLATFORM_3DS
++                sCtrTextHurry = !JOY_NEW(A_BUTTON | B_BUTTON);
++#endif
+                 subStruct->hasPrintBeenSpedUp = TRUE;
+                 textPrinter->delayCounter = 0;
+             }
+@@ -1239,7 +1289,11 @@ static u32 UNUSED GetStringWidthFixedWidthFont(const u8 *str, u8 fontId, u8 lett
  
      width = 0;
      line = 0;
@@ -12224,7 +13104,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
      strPos = 0;
  
      do
-@@ -1352,6 +1383,10 @@ s32 GetStringWidth(u8 fontId, const u8 *str, s16 letterSpacing)
+@@ -1352,6 +1406,10 @@ s32 GetStringWidth(u8 fontId, const u8 *str, s16 letterSpacing)
      lineWidth = 0;
      bufferPointer = 0;
  
@@ -12235,7 +13115,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
      while (*str != EOS)
      {
          switch (*str)
-@@ -1379,6 +1414,9 @@ s32 GetStringWidth(u8 fontId, const u8 *str, s16 letterSpacing)
+@@ -1379,6 +1437,9 @@ s32 GetStringWidth(u8 fontId, const u8 *str, s16 letterSpacing)
          case CHAR_DYNAMIC:
              if (bufferPointer == NULL)
                  bufferPointer = DynamicPlaceholderTextUtil_GetPlaceholderPtr(*++str);
@@ -12245,7 +13125,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
              while (*bufferPointer != EOS)
              {
                  glyphWidth = func(*bufferPointer++, isJapanese);
-@@ -1515,7 +1553,11 @@ u8 RenderTextHandleBold(u8 *pixels, u8 fontId, u8 *str)
+@@ -1515,7 +1576,11 @@ u8 RenderTextHandleBold(u8 *pixels, u8 fontId, u8 *str)
      shadowColor = TEXT_COLOR_LIGHT_GRAY;
  
      GenerateFontHalfRowLookupTable(TEXT_COLOR_WHITE, TEXT_COLOR_TRANSPARENT, TEXT_COLOR_LIGHT_GRAY);
@@ -12257,7 +13137,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
      strPos = 0;
  
      do
-@@ -1610,7 +1652,7 @@ u8 DrawKeypadIcon(u8 windowId, u8 keypadIconId, u16 x, u16 y)
+@@ -1610,7 +1675,7 @@ u8 DrawKeypadIcon(u8 windowId, u8 keypadIconId, u16 x, u16 y)
  {
      BlitBitmapRectToWindow(
          windowId,
@@ -12266,7 +13146,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          0,
          0,
          0x80,
-@@ -1686,7 +1728,12 @@ static void DecompressGlyph_Small(u16 glyphId, bool32 isJapanese)
+@@ -1686,7 +1751,12 @@ static void DecompressGlyph_Small(u16 glyphId, bool32 isJapanese)
  
      if (isJapanese == 1)
      {
@@ -12280,7 +13160,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          DecompressGlyphTile(glyphs, gCurGlyph.gfxBufferTop);
          DecompressGlyphTile(glyphs + 0x80, gCurGlyph.gfxBufferBottom);
          gCurGlyph.width = 8;
-@@ -1694,7 +1741,12 @@ static void DecompressGlyph_Small(u16 glyphId, bool32 isJapanese)
+@@ -1694,7 +1764,12 @@ static void DecompressGlyph_Small(u16 glyphId, bool32 isJapanese)
      }
      else
      {
@@ -12294,7 +13174,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          gCurGlyph.width = gFontSmallLatinGlyphWidths[glyphId];
  
          if (gCurGlyph.width <= 8)
-@@ -1728,7 +1780,12 @@ static void DecompressGlyph_Narrow(u16 glyphId, bool32 isJapanese)
+@@ -1728,7 +1803,12 @@ static void DecompressGlyph_Narrow(u16 glyphId, bool32 isJapanese)
  
      if (isJapanese == TRUE)
      {
@@ -12308,7 +13188,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          DecompressGlyphTile(glyphs, gCurGlyph.gfxBufferTop);
          DecompressGlyphTile(glyphs + 0x80, gCurGlyph.gfxBufferBottom);
          gCurGlyph.width = 8;
-@@ -1736,7 +1793,12 @@ static void DecompressGlyph_Narrow(u16 glyphId, bool32 isJapanese)
+@@ -1736,7 +1816,12 @@ static void DecompressGlyph_Narrow(u16 glyphId, bool32 isJapanese)
      }
      else
      {
@@ -12322,7 +13202,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          gCurGlyph.width = gFontNarrowLatinGlyphWidths[glyphId];
  
          if (gCurGlyph.width <= 8)
-@@ -1770,7 +1832,12 @@ static void DecompressGlyph_SmallNarrow(u16 glyphId, bool32 isJapanese)
+@@ -1770,7 +1855,12 @@ static void DecompressGlyph_SmallNarrow(u16 glyphId, bool32 isJapanese)
  
      if (isJapanese == TRUE)
      {
@@ -12336,7 +13216,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          DecompressGlyphTile(glyphs, gCurGlyph.gfxBufferTop);
          DecompressGlyphTile(glyphs + 0x80, gCurGlyph.gfxBufferBottom);
          gCurGlyph.width = 8;
-@@ -1778,7 +1845,12 @@ static void DecompressGlyph_SmallNarrow(u16 glyphId, bool32 isJapanese)
+@@ -1778,7 +1868,12 @@ static void DecompressGlyph_SmallNarrow(u16 glyphId, bool32 isJapanese)
      }
      else
      {
@@ -12350,7 +13230,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          gCurGlyph.width = gFontSmallNarrowLatinGlyphWidths[glyphId];
  
          if (gCurGlyph.width <= 8)
-@@ -1812,7 +1884,12 @@ static void DecompressGlyph_Short(u16 glyphId, bool32 isJapanese)
+@@ -1812,7 +1907,12 @@ static void DecompressGlyph_Short(u16 glyphId, bool32 isJapanese)
  
      if (isJapanese == TRUE)
      {
@@ -12364,7 +13244,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          DecompressGlyphTile(glyphs, gCurGlyph.gfxBufferTop);
          DecompressGlyphTile(glyphs + 0x8, gCurGlyph.gfxBufferTop + 8);
          DecompressGlyphTile(glyphs + 0x80, gCurGlyph.gfxBufferBottom);    // gCurGlyph + 0x20
-@@ -1822,7 +1899,12 @@ static void DecompressGlyph_Short(u16 glyphId, bool32 isJapanese)
+@@ -1822,7 +1922,12 @@ static void DecompressGlyph_Short(u16 glyphId, bool32 isJapanese)
      }
      else
      {
@@ -12378,7 +13258,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          gCurGlyph.width = gFontShortLatinGlyphWidths[glyphId];
  
          if (gCurGlyph.width <= 8)
-@@ -1856,7 +1938,12 @@ static void DecompressGlyph_Normal(u16 glyphId, bool32 isJapanese)
+@@ -1856,7 +1961,12 @@ static void DecompressGlyph_Normal(u16 glyphId, bool32 isJapanese)
  
      if (isJapanese == TRUE)
      {
@@ -12392,7 +13272,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          DecompressGlyphTile(glyphs, gCurGlyph.gfxBufferTop);
          DecompressGlyphTile(glyphs + 0x80, gCurGlyph.gfxBufferBottom);
          gCurGlyph.width = 8;
-@@ -1864,7 +1951,12 @@ static void DecompressGlyph_Normal(u16 glyphId, bool32 isJapanese)
+@@ -1864,7 +1974,12 @@ static void DecompressGlyph_Normal(u16 glyphId, bool32 isJapanese)
      }
      else
      {
@@ -12406,7 +13286,7 @@ index 1c8a64d5c7d34936f825764126ba6c40cac4c959..3adeeb9e62b54c8aa7f6e909718fc555
          gCurGlyph.width = gFontNormalLatinGlyphWidths[glyphId];
  
          if (gCurGlyph.width <= 8)
-@@ -1896,7 +1988,12 @@ static void DecompressGlyph_Bold(u16 glyphId)
+@@ -1896,7 +2011,12 @@ static void DecompressGlyph_Bold(u16 glyphId)
  {
      const u16 *glyphs;
  

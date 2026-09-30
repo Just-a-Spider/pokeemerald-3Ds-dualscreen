@@ -145,6 +145,17 @@ build/root/src/pokenav.o: compat/ctr_gba_centred.h
 build/root/src/pokemon_storage_system.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_STORAGE \
 	-include $(abspath compat/ctr_gba_centred.h)
 build/root/src/pokemon_storage_system.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
+# The bag as the game draws it, on the bottom screen: left of the column when
+# opened from the field, over the whole screen from a battle, a shop, the PC.
+# CTR_BAG_ORIGINAL=0 brings back the bottom screen's own bag list, which runs
+# the game's bag hidden (3ds_bottom_ui.c).
+CTR_BAG_ORIGINAL ?= 1
+ifeq ($(CTR_BAG_ORIGINAL),1)
+FULLCFLAGS += -DCTR_BAG_ORIGINAL
+build/root/src/item_menu.o: FULLCFLAGS += -DCTR_GBA_STAGE -DCTR_CENTRED_BAG \
+	-include $(abspath compat/ctr_gba_centred.h)
+build/root/src/item_menu.o: compat/ctr_gba_centred.h $(ROOT)/include/gba/defines.h
+endif
 # The battle scene: one 240x160 composition whose sprites, windows, scanline
 # tables and BG pages are all laid out for the GBA screen, shown 1:1 and filled
 # out to the whole top screen by the compositor (compat/ctr_gba_battle.h).

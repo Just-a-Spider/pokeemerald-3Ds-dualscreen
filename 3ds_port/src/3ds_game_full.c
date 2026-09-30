@@ -18,6 +18,7 @@
 #include "sound_mixer.h"
 #include "m4a.h"
 #include "scanline_effect.h"
+#include "item_menu.h"
 #include "port_platform.h"
 #include "port_log.h"
 
@@ -188,6 +189,14 @@ void CtrCentredStorage_SetVBlankCallback(IntrCallback callback)
 void CtrCentredSummary_SetVBlankCallback(IntrCallback callback)
 {
     SetCentredCallback(callback, CTR_CENTRED_SUMMARY);
+}
+
+/* The bag from the field goes left of the column, from anywhere else over the
+ * whole bottom screen. */
+void CtrCentredBag_SetVBlankCallback(IntrCallback callback)
+{
+    SetCentredCallback(callback, gBagPosition.location == ITEMMENULOCATION_FIELD ? CTR_CENTRED_BAG
+                                                                                  : CTR_CENTRED_BAG_WHOLE);
 }
 
 void CtrBattle_SetVBlankCallback(IntrCallback callback)

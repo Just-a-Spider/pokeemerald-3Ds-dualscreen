@@ -9,7 +9,9 @@
  * compositor draws its screens into that area (CtrVideo_BottomInUse) and a
  * tap on them becomes the buttons the PokéNav reads. The PC's boxes are
  * drawn there too, and a tap on them acts in the game directly
- * (pokemon_storage_system.c, CtrStorage_Tap).
+ * (pokemon_storage_system.c, CtrStorage_Tap). So is the bag (CTR_BAG_ORIGINAL,
+ * item_menu.c, CtrBag_Touch): BAG opens the game's own, left of the column;
+ * opened from a battle, a shop or the PC it has the whole screen.
  *
  * Map, trainer card, Pokédex, summary, save and options are drawn and run
  * here directly. Using an item, switching mons, giving items or field moves
@@ -123,6 +125,12 @@ void CtrMonMarkings_SetCursor(s8 cursor);
 bool8 CtrStorage_IsOpen(void);
 void CtrStorage_Tap(s16 x, s16 y);
 void CtrSummary_Tap(s16 x, s16 y);
+#ifdef CTR_BAG_ORIGINAL
+/* item_menu.c: the bag's touches, in pixels of its picture. */
+enum { BAG_TOUCH_DOWN, BAG_TOUCH_MOVE, BAG_TOUCH_UP, BAG_TOUCH_CANCEL };
+void CtrBag_Touch(u8 phase, s16 x, s16 y);
+bool8 CtrBag_Close(void);
+#endif
 void SetPokemonCryStereo(u32 val);
 extern const struct PokedexEntry gPokedexEntries[];
 
@@ -1086,8 +1094,8 @@ typedef struct
     u16 heldItem;
     /* Region map. */
     u8 mapsec, cursorX, cursorY, pickMapsec, pickX, pickY;
-    /* Bag. */
-    u8 pocket, keyPocket;
+    /* Bag. The game's own on show (CTR_BAG_ORIGINAL): BAG_VIEW_*. */
+    u8 pocket, keyPocket, bagView;
     s16 bagCursor;
     u16 bagScroll, bagCount;
     u16 items[BAG_ROWS], qty[BAG_ROWS];
@@ -1111,6 +1119,19 @@ typedef struct
     struct ChooseMoveStruct moves4;
     u8 text[96];
 } ViewState;
+
+/* Which of the game's bag is on show (CTR_BAG_ORIGINAL). */
+enum { BAG_VIEW_NONE, BAG_VIEW_SECTION, BAG_VIEW_WHOLE };
+
+static bool8 BagShown(u8 mode)
+{
+#ifdef CTR_BAG_ORIGINAL
+    return mode == MODE_BAG_MENU;
+#else
+    (void)mode;
+    return FALSE;
+#endif
+}
 
 static ViewState sState, sShown;
 static bool8 sForceRedraw = TRUE;
@@ -1343,6 +1364,11 @@ static u8 CurrentMode(void)
         return MODE_OFF;
     if (CtrPokenav_IsOpen())
         return MODE_POKENAV;
+#ifdef CTR_BAG_ORIGINAL
+    /* Before the boxes: the bag can be opened from them, whole screen too. */
+    if (gMain.callback2 == CB2_BagMenuRun && gBagMenu)
+        return MODE_BAG_MENU;
+#endif
     /* A summary opened from the boxes is on the whole screen too. */
     if (CtrStorage_IsOpen() || CtrVideo_BottomWhole())
         return MODE_STORAGE;
@@ -1929,7 +1955,16 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     if (mode == MODE_PARTY_MENU)
         s->screen = SCR_POKEMON;
     else if (mode == MODE_BAG_MENU)
+    {
         s->screen = SCR_BAG;
+#ifdef CTR_BAG_ORIGINAL
+        /* The bag from the field is left of the column; from anything else
+         * it covers the column. */
+        s->bagView = gBagPosition.location == ITEMMENULOCATION_FIELD ? BAG_VIEW_SECTION : BAG_VIEW_WHOLE;
+        if (s->bagView == BAG_VIEW_WHOLE)
+            s->screen = SCR_COUNT;
+#endif
+    }
     else if (mode == MODE_POKENAV)
         s->screen = SCR_POKENAV;
     else if (mode == MODE_STORAGE)
@@ -1958,6 +1993,10 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
                 SnapshotPartyPanel(s);
             break;
         case SCR_BAG:
+#ifdef CTR_BAG_ORIGINAL
+            if (s->bagView)
+                break;
+#endif
             SnapshotBag(s);
             if (mode == MODE_BAG_MENU)
                 SnapshotBagPanel(s);
@@ -3052,7 +3091,7 @@ static void Render(const ViewState *s)
     else
     {
         /* In battle the bag and the party menu have the whole screen. */
-        bool8 column = !s->inBattle;
+        bool8 column = !s->inBattle && s->bagView != BAG_VIEW_WHOLE;
 
         if (s->screen == SCR_MAP && column)
             CopyCache(CACHE_MAP);
@@ -3073,7 +3112,14 @@ static void Render(const ViewState *s)
             else
                 DrawParty(s);
             break;
-        case SCR_BAG: DrawBag(s); break;
+        case SCR_BAG:
+            /* The game's bag is drawn there by the compositor; black until
+             * it is, as the bag fades in from black. */
+            if (s->bagView)
+                FillRect(0, 0, CW, H, 0);
+            else
+                DrawBag(s);
+            break;
         case SCR_CARD: DrawTrainerCard(s); break;
         case SCR_POKEDEX: DrawDex(s); break;
         case SCR_SAVE: DrawSave(s); break;
@@ -3082,6 +3128,8 @@ static void Render(const ViewState *s)
         sOX = 0;
         if (column)
             DrawColumn(s);
+        else if (s->bagView == BAG_VIEW_WHOLE)
+            memset(sCanvas, 0, sizeof(sCanvas));
     }
     DrawAnimIcons();
     /* Left of the column is the PokéNav's while the compositor draws it, and
@@ -3690,6 +3738,7 @@ static struct
     s16 startX, startY, lastX, lastY;
     u8 pressed;
     u16 dragScroll;
+    bool8 bag;   /* on the game's bag, which takes it itself */
 } sTouch;
 
 /* The save, done here as start_menu.c's SaveDoSaveCallback does it. */
@@ -3939,6 +3988,16 @@ static void Activate(u8 id, u8 mode)
             }
             return;
         }
+#ifdef CTR_BAG_ORIGINAL
+        /* The bag on show: its own button closes it, as B does; any other
+         * closes it for that screen. */
+        if (mode == MODE_BAG_MENU)
+        {
+            if (CtrBag_Close() && screen != SCR_BAG)
+                sScreen = screen;
+            return;
+        }
+#endif
         /* A hidden menu is closed first, at a point where B leaves it. */
         if (mode != MODE_FIELD)
         {
@@ -3960,6 +4019,18 @@ static void Activate(u8 id, u8 mode)
             }
             return;
         }
+#ifdef CTR_BAG_ORIGINAL
+        /* The game's bag, as the PokéNav: it takes the area when it opens. */
+        if (screen == SCR_BAG)
+        {
+            if (FieldIdle() && CtrStartMenu_Available())
+            {
+                StartPlan(PLAN_START, START_BAG);
+                BeginSession(FALSE);
+            }
+            return;
+        }
+#endif
         if (screen == SCR_SAVE && sScreen != SCR_SAVE)
             OpenSave();
         if (screen == SCR_POKEMON)
@@ -4026,9 +4097,37 @@ static u8 ProcessTouch(u8 mode)
     if (mode != sShown.mode)
     {
         /* A touch that began on another screen does not act on this one. */
+#ifdef CTR_BAG_ORIGINAL
+        if (sTouch.bag)
+            CtrBag_Touch(BAG_TOUCH_CANCEL, 0, 0);
+#endif
         sTouch.active = FALSE;
+        sTouch.bag = FALSE;
         return HIT_NONE;
     }
+#ifdef CTR_BAG_ORIGINAL
+    /* The game's bag: its picture in the middle of its area, the touch in
+     * pixels of it, as it goes. */
+    if ((in->touchDown && BagShown(mode) && (sShown.bagView == BAG_VIEW_WHOLE || in->touchX < CW))
+     || (sTouch.bag && sTouch.active))
+    {
+        int ox = sShown.bagView == BAG_VIEW_WHOLE ? (W - 240) / 2 : 0, oy = (H - 160) / 2;
+
+        if (in->touchDown)
+        {
+            sTouch.active = sTouch.bag = TRUE;
+            CtrBag_Touch(BAG_TOUCH_DOWN, in->touchX - ox, in->touchY - oy);
+        }
+        else if (in->touchActive)
+            CtrBag_Touch(BAG_TOUCH_MOVE, in->touchX - ox, in->touchY - oy);
+        else
+        {
+            sTouch.active = sTouch.bag = FALSE;
+            CtrBag_Touch(BAG_TOUCH_UP, 0, 0);
+        }
+        return HIT_NONE;
+    }
+#endif
     if (in->touchDown)
     {
         sTouch.active = TRUE;
@@ -4146,7 +4245,7 @@ void CtrBottom_Frame(void)
             sSummary = -1;
         }
     }
-    if (hold && mode != MODE_POKENAV && mode != MODE_STORAGE)   /* those are on show */
+    if (hold && mode != MODE_POKENAV && mode != MODE_STORAGE && !BagShown(mode))   /* those are on show */
         FastForward();
 
     /* The PokéNav's last frame stays left of the column until repainted. */
