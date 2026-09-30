@@ -1685,6 +1685,45 @@ static void DrawNavBackmost(unsigned bg, bool texture)
     }
 }
 
+/* The PokéNav keeps its own band by band path (NavCompose, DrawBandBgTex). */
+static bool CentredTexture(unsigned bg)
+{
+    return sCentredScreen != CTR_CENTRED_POKENAV && LayerDrawable(bg);
+}
+
+/*
+ * Lines [top, bottom) of a centred screen's picture: from the layer's texture
+ * when it has one (LayersPrepare), one quad where the tiles are 30 per line.
+ * Walked tile by tile, the PC's four layers were ~3000 quads a frame and 30
+ * fps on an Old 3DS; the bag's three, 1800 and a frame dropped every second.
+ */
+static void DrawCentredPicture(unsigned bg, int top, int bottom)
+{
+    if (!CentredTexture(bg) || sSpanShiftX || sSpanShiftY)
+    {
+        DrawCentredSpan(bg, 0, 240, top, bottom);
+        return;
+    }
+    ViewBase();
+    DrawLayerRect(bg, 0, 240, top, bottom, 0, (float)top, 1, 1, false, 0, 0);
+}
+
+/*
+ * The margins of a layer that reads on through its tilemap (fill->wrap): the
+ * texture repeats as the tilemap wraps, so they are the four bands around the
+ * picture cut from it at their own place.
+ */
+static bool DrawWrapMarginsTex(unsigned bg, const CentredFill *fill)
+{
+    if (!fill->wrap || fill->across || !CentredTexture(bg)) return false;
+    ViewBase();
+    DrawLayerRect(bg, VIEW_LEFT, VIEW_RIGHT, VIEW_TOP, 0, VIEW_LEFT, VIEW_TOP, 1, 1, false, 0, 0);
+    DrawLayerRect(bg, VIEW_LEFT, VIEW_RIGHT, 160, VIEW_BOTTOM, VIEW_LEFT, 160, 1, 1, false, 0, 0);
+    DrawLayerRect(bg, VIEW_LEFT, 0, 0, 160, VIEW_LEFT, 0, 1, 1, false, 0, 0);
+    DrawLayerRect(bg, 240, VIEW_RIGHT, 0, 160, 240, 0, 1, 1, false, 0, 0);
+    return true;
+}
+
 /* True when the centred screen draws this layer itself. */
 static bool DrawCentredBg(unsigned bg)
 {
@@ -1708,8 +1747,9 @@ static bool DrawCentredBg(unsigned bg)
             DrawCentredMargins(bg, fill, 0, sky);
             sSpanShiftY = 0;
         }
-        DrawCentredSpan(bg, 0, 240, sky * 8, 160);
-        DrawCentredMargins(bg, fill, sky ? sky : -64, 64);
+        DrawCentredPicture(bg, sky * 8, 160);
+        if (sky || !DrawWrapMarginsTex(bg, fill))
+            DrawCentredMargins(bg, fill, sky ? sky : -64, 64);
         return true;
     }
     if (bg == 0 && speech)
@@ -1753,6 +1793,11 @@ static void DrawTextBg(unsigned bg)
     if (sCentred)
     {
         if (DrawCentredBg(bg)) return;
+        if (CentredTexture(bg))
+        {
+            DrawCentredPicture(bg, 0, 160);
+            return;
+        }
         if (right > 240) right = 240;
         if (bottom > 160) bottom = 160;
     }
@@ -1797,7 +1842,8 @@ typedef struct
 static LayerTexture sLayers[4];
 /* Whether each background is drawn from its texture this frame. */
 static bool sLayerReady[4];
-static uint32_t sLayerFailFrame;
+static uint32_t sLayerFail[4];
+static bool sLayerFailLogged;
 /*
  * A stage whose layer textures found no VRAM because the depth planes hold it.
  * Its layers drawn tile by tile cost 30 ms a frame on an Old 3DS, so the
@@ -1871,10 +1917,37 @@ static void LayersRelease(void)
  */
 static bool LineWindows(void);
 
+/* A texture and render target for background bg at its tilemap's size. */
+static bool LayerCreate(unsigned bg, unsigned width, unsigned height)
+{
+    LayerTexture *layer = &sLayers[bg];
+
+    if (C3D_TexInitVRAM(&layer->tex, width, height, GPU_RGBA5551)
+        && (layer->target = C3D_RenderTargetCreateFromTex(&layer->tex, GPU_TEXFACE_2D, 0, -1)))
+        return true;
+    LayerRelease(bg);
+    return false;
+}
+
 static void LayersPrepare(void)
 {
-    unsigned want = LineBackgrounds() | (sStage || sFieldLayers || LineWindows() ? TextBackgrounds() : 0);
+    /* A centred screen too (DrawCentredPicture), the PokéNav only when its
+     * line windows need them. */
+    bool centred = sCentred && sCentredScreen != CTR_CENTRED_POKENAV;
+    unsigned want = LineBackgrounds()
+                  | (sStage || sFieldLayers || centred || LineWindows() ? TextBackgrounds() : 0);
 
+    /* The wanted ones of the wrong size go first, so what they held is
+     * free for any of this frame's new ones. */
+    for (unsigned bg = 0; bg < 4; ++bg)
+    {
+        unsigned size = Reg(8 + bg * 2) >> 14;
+
+        if ((want & (1u << bg)) && sLayers[bg].tex.data
+            && (sLayers[bg].tex.width != ((size & 1) ? 512 : 256)
+                || sLayers[bg].tex.height != ((size & 2) ? 512 : 256)))
+            LayerRelease(bg);
+    }
     for (unsigned bg = 0; bg < 4; ++bg)
     {
         LayerTexture *layer = &sLayers[bg];
@@ -1888,34 +1961,54 @@ static void LayersPrepare(void)
                 LayerRelease(bg);
             continue;
         }
-        if (layer->tex.data && (layer->tex.width != width || layer->tex.height != height))
-            LayerRelease(bg);
         if (!layer->tex.data)
         {
-            if (sLayerFailFrame && sStats.frames - sLayerFailFrame < LAYER_RETRY_FRAMES) continue;
-            if (!C3D_TexInitVRAM(&layer->tex, width, height, GPU_RGBA5551)
-                || !(layer->target = C3D_RenderTargetCreateFromTex(&layer->tex, GPU_TEXFACE_2D, 0, -1)))
+            if (sLayerFail[bg] && sStats.frames - sLayerFail[bg] < LAYER_RETRY_FRAMES) continue;
+            if (!LayerCreate(bg, width, height))
             {
-                LayerRelease(bg);
-                if (sStage && sBandsReady)
-                {
-                    /* Tile by tile for this one frame; a plane goes, or with
-                     * only two left, all of them (sPlaneShrinkAsked). */
-                    if (sBandCount > 2)
-                        sPlaneShrinkAsked = true;
-                    else
+                /*
+                 * VRAM is taken and given back by every screen (the bottom
+                 * surface, the voxel atlases, the other layers), so a block
+                 * this size may be missing with enough free in pieces. The
+                 * layers kept for a screen that is not up, and the voxel
+                 * world's idle memory, go before this one gives up.
+                 */
+                unsigned freed = 0;
+
+                for (unsigned other = 0; other < 4; ++other)
+                    if (!(want & (1u << other)) && sLayers[other].tex.data)
                     {
-                        sStageWithoutPlanes = true;
-                        CtrVideo_RequestPlaneRelease();
+                        LayerRelease(other);
+                        ++freed;
                     }
+#if CTR_VOXEL_ENABLED
+                if (!sStage) freed += CtrVoxel_ReleaseIdleVram() > 0;
+#endif
+                if (!freed || !LayerCreate(bg, width, height))
+                {
+                    if (sStage && sBandsReady)
+                    {
+                        /* Tile by tile for this one frame; a plane goes, or with
+                         * only two left, all of them (sPlaneShrinkAsked). */
+                        if (sBandCount > 2)
+                            sPlaneShrinkAsked = true;
+                        else
+                        {
+                            sStageWithoutPlanes = true;
+                            CtrVideo_RequestPlaneRelease();
+                        }
+                        continue;
+                    }
+                    if (!sLayerFailLogged)
+                        CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no VRAM for a %ux%u layer texture (free=%lu); "
+                                     "tile walk", width, height, (unsigned long)vramSpaceFree());
+                    sLayerFailLogged = true;
+                    /* Only this layer waits; the others still try. */
+                    sLayerFail[bg] = sStats.frames | 1;
                     continue;
                 }
-                if (!sLayerFailFrame)
-                    CtrLog_Write(CTR_LOG_ERROR, "VIDEO: no VRAM for a %ux%u layer texture (free=%lu); "
-                                 "tile walk", width, height, (unsigned long)vramSpaceFree());
-                sLayerFailFrame = sStats.frames | 1;
-                continue;
             }
+            sLayerFail[bg] = 0;
             C3D_TexSetFilter(&layer->tex, GPU_NEAREST, GPU_NEAREST);
             C3D_TexSetWrap(&layer->tex, GPU_REPEAT, GPU_REPEAT);
         }
@@ -3447,7 +3540,16 @@ static bool BottomScreen(unsigned screen)
 
 bool CtrVideo_BottomWhole(void) { return sBottomInUse && BottomWhole(sCentredScreen); }
 
-/* After the frame: the composed picture into the bottom screen's framebuffer. */
+/*
+ * The composed picture into the bottom screen's framebuffer, inside the
+ * frame: there citro3d queues the transfer after the drawing (a split) instead
+ * of waiting for it. Called after C3D_FrameEnd it waited for the GPU to finish
+ * the whole frame and then for the copy, every frame a bottom screen is up:
+ * the PC, the bag and the Pokédex spent ~5 ms of CPU a frame on an Old 3DS
+ * beyond their layers and sprites, and dropped frames. The framebuffer is
+ * single-buffered (3ds_log.c) and the CPU canvas only writes the column past
+ * it.
+ */
 static void BottomTransfer(void)
 {
     u32 *fb = (u32 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
@@ -4895,8 +4997,9 @@ void CtrVideo_Present(void)
     if (!bottom) DrawFps(sTop);
     if (stereo) DrawFps(sTopRight);
 #endif
-    C3D_FrameEnd(0);
+    /* Queued in the frame, behind the drawing into sBottom (BottomTransfer). */
     if (bottom) BottomTransfer();
+    C3D_FrameEnd(0);
     ++sStats.frames;
     ++sFpsFrames;
     sStats.cpuMs = (svcGetSystemTick() - start) * 1000.0 / SYSCLOCK_ARM11;
