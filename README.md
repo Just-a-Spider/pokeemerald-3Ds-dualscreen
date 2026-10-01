@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/ZallaxDev/pokeemerald-3Ds-dualscreen/releases/latest"><img src="https://img.shields.io/badge/Download-Latest_release-168B67?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="Download the latest release"></a>
   <a href="https://x.com/DustZallax"><img src="https://img.shields.io/badge/Follow-%40DustZallax-18181B?style=for-the-badge&amp;logo=x&amp;logoColor=white" alt="Follow @DustZallax on X"></a>
+  <a href="https://discord.com/invite/tfqHF8496P"><img src="https://img.shields.io/badge/Discord-Join_the_community-5865F2?style=for-the-badge&amp;logo=discord&amp;logoColor=white" alt="Join the community on Discord"></a>
   <a href="https://ko-fi.com/zallax"><img src="https://img.shields.io/badge/Ko--fi-Buy_me_a_coffee-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Buy Zallax a coffee on Ko-fi"></a>
 </p>
 
@@ -20,6 +21,7 @@
   <a href="#features">Features</a> &nbsp; · &nbsp;
   <a href="#getting-started">Getting started</a> &nbsp; · &nbsp;
   <a href="#documentation">Documentation</a> &nbsp; · &nbsp;
+  <a href="#community">Community</a> &nbsp; · &nbsp;
   <a href="#support-the-project">Support the project</a>
 </p>
 
@@ -181,6 +183,17 @@ the development loop, loose data, data packs and host tests.
 | [Contributing](CONTRIBUTING.md) | Guidelines for contributing to the project. |
 | [Changelog](CHANGELOG.md) | Changes across releases. |
 
+## Community
+
+Join the **[Discord community](https://discord.com/invite/tfqHF8496P)** to
+talk about the project and share your adventures in Hoenn. Follow
+**[@DustZallax on X](https://x.com/DustZallax)** for project updates and
+to stay in touch.
+
+<p align="center">
+  <a href="https://discord.com/invite/tfqHF8496P"><img src="https://img.shields.io/badge/Join_us_on-Discord-5865F2?style=for-the-badge&amp;logo=discord&amp;logoColor=white" alt="Join us on Discord"></a>
+</p>
+
 ## Support the project
 
 If you're enjoying this new way to explore Hoenn, you can **buy me a coffee**
@@ -191,9 +204,8 @@ coffee is appreciated. Thank you for being part of the adventure!
   <a href="https://ko-fi.com/zallax"><img src="https://img.shields.io/badge/Buy_me_a_coffee-Support_on_Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Buy Zallax a coffee — support on Ko-fi"></a>
 </p>
 
-Follow **[@DustZallax on X](https://x.com/DustZallax)** for project updates
-and to stay in touch. You can also support the project by starring the
-repository, sharing it or [contributing](CONTRIBUTING.md).
+You can also support the project by starring the repository, sharing it
+or [contributing](CONTRIBUTING.md).
 
 ---
 
