@@ -10,6 +10,46 @@
 #include "3ds_video.h"
 #include "3ds_data.h"
 
+/* Public queue passed by libctru, never a cast of Citro3D's private context.
+ * Uploads reserve worst-case split+copy entries and leave the compositor's
+ * clears, postprocessing, battle layers and final transfers room to finish. */
+static gxCmdQueue_s *sFrameQueue;
+static unsigned sUploadCommands, sRenderReserve;
+void __real_GX_BindQueue(gxCmdQueue_s *queue);
+void __wrap_GX_BindQueue(gxCmdQueue_s *queue)
+{
+    sFrameQueue = queue;
+    __real_GX_BindQueue(queue);
+}
+
+bool CtrVideo_TryVoxelUpload(void)
+{
+    if (sFrameQueue == NULL)
+        return false;
+    unsigned capacity = sFrameQueue->maxEntries;
+    unsigned used = sFrameQueue->numEntries;
+
+    if (used + 2u + sRenderReserve > capacity
+     || sUploadCommands + 2u + sRenderReserve > capacity)
+        return false;
+    sUploadCommands += 2u;
+    return true;
+}
+
+unsigned CtrVideo_VoxelUploadsLeft(void)
+{
+    unsigned capacity, used, room;
+
+    if (sFrameQueue == NULL)
+        return 0;
+    capacity = sFrameQueue->maxEntries;
+    used = sFrameQueue->numEntries;
+    if (used < sUploadCommands)
+        used = sUploadCommands;
+    room = capacity > used + sRenderReserve ? capacity - used - sRenderReserve : 0;
+    return room / 2u;
+}
+
 /* The voxel overworld replaces this compositor's output while the player is
  * walking around; every other game state keeps the 2D path below. */
 #ifndef CTR_VOXEL_ENABLED
@@ -3473,7 +3513,7 @@ static void RenderBattleScene(uint32_t clear)
     sLayerExclude = 0;
     C2D_Flush();
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
-    /* In front of the voxel world the GPU is already running (GpuStartAtSplit). */
+    /* Seal the world list; FrameEnd owns queue submission and completion. */
     GpuSplit();
 
     sZoom = zoom;
@@ -3757,65 +3797,11 @@ static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax)
 }
 
 #if CTR_VOXEL_ENABLED
-/*
- * The GPU set to work on the voxel world as soon as it is recorded, not at
- * FrameEnd. Citro3D stops its GX queue at FrameBegin and runs it only in
- * FrameEnd, so the GPU - 6.5-9 ms for a town on an Old 3DS - waited for the
- * whole present, the 2D compose over the world and FrameEnd's cache flush
- * included, and a frame whose present ran long missed its VBlank with the CPU
- * idle. Run from the world's split, the queue takes each later split as it
- * is made.
- *
- * What the GPU reads must then be in memory when it is queued rather than at
- * FrameEnd, which is when citro3d flushes the linear heap: it is flushed at
- * each split from here on, and the frame ended with GX_CMDLIST_FLUSH so as
- * not to do it twice there. The queue is the first member of citro3d's
- * context (citro3d 1.7.1, as ReleaseDappleUnit's poke); under any other
- * layout the frame is left as it was.
- */
-extern uint8_t __C3D_Context[];
-extern u32 __ctru_linear_heap, __ctru_linear_heap_size;
-static bool sGpuEarly;
-
-static void FlushLinear(void)
-{
-    GSPGPU_FlushDataCache((void *)__ctru_linear_heap, __ctru_linear_heap_size);
-}
-
-static bool GpuStartAtSplit(void)
-{
-    static int sUsable = -1;
-    gxCmdQueue_s *queue = (gxCmdQueue_s *)(void *)__C3D_Context;
-
-    if (sUsable < 0)
-    {
-        sUsable = queue->entries != NULL && queue->maxEntries == 32 && queue->callback != NULL
-               && queue->numEntries <= queue->maxEntries && queue->lastEntry <= queue->numEntries;
-        CtrLog_Write(sUsable ? CTR_LOG_VIDEO : CTR_LOG_ERROR,
-                     sUsable ? "GPU: the voxel world is drawn from its split on"
-                             : "GPU: unknown citro3d layout, the GPU starts at FrameEnd");
-    }
-    if (!sUsable)
-    {
-        C3D_FrameSplit(0);
-        return false;
-    }
-    FlushLinear();
-    C3D_FrameSplit(GX_CMDLIST_FLUSH);
-    gxCmdQueueRun(queue);
-    return true;
-}
-
-/* A split once the GPU is running: what it reads, flushed first. */
+/* Submit only at FrameEnd: Citro3D owns transfer completion and buffer swaps.
+ * Its single linear-heap flush covers all producers, including Citro2D. */
 static void GpuSplit(void)
 {
-    if (!sGpuEarly)
-    {
-        C3D_FrameSplit(0);
-        return;
-    }
-    FlushLinear();
-    C3D_FrameSplit(GX_CMDLIST_FLUSH);
+    C3D_FrameSplit(0);
 }
 
 /*
@@ -3977,7 +3963,7 @@ static void RenderVoxel(uint32_t clear)
     /* Finish the world before sampling it. UI is drawn on top after blur.
      * The GPU draws it from here while the rest is recorded. */
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
-    sGpuEarly = GpuStartAtSplit();
+    GpuSplit();
 
     /* Back to the 2D compositor, which assumes its own program and no depth. */
     C2D_Prepare();
@@ -4116,7 +4102,7 @@ static void RenderBattleWorld(uint32_t clear)
     C2D_TargetClear(sLogical, clear);
     CtrVoxel_Draw(sLogical, 0.0f);
     C3D_SetScissor(GPU_SCISSOR_DISABLE, 0, 0, 0, 0);
-    sGpuEarly = GpuStartAtSplit();
+    GpuSplit();
 
     /* The world to the screen, as in the field. */
     C2D_Prepare();
@@ -5222,6 +5208,8 @@ void CtrVideo_Present(void)
     ScenePrepare();
     uint64_t waitStart = svcGetSystemTick();
     if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) return;
+    sUploadCommands = 0;
+    sRenderReserve = sBattle ? 28u : 24u;
     uint64_t start = svcGetSystemTick();
     sStats.waitMs = (start - waitStart) * 1000.0 / SYSCLOCK_ARM11;
 #if CTR_VOXEL_ENABLED
@@ -5267,12 +5255,14 @@ void CtrVideo_Present(void)
                 /* The voxel figures are the last voxel frame's: on a 2D frame they
                  * are stale, and present= alone is the 2D compositor. */
                 CtrLog_Write(CTR_LOG_VIDEO, "DROP frame=%lu gap=%.1fms (+%u quiet): present=%.1f "
-                             "(voxel=%.1f: world=%.1f atlas=%.1f chunks=%.1f sprites=%.1f) "
+                             "(voxel=%.1f: world=%.1f atlas=%.1f chunks=%.1f sprites=%.1f "
+                             "stream=%.1f anim=%.1f draft=%.1f) "
                              "after=%.1f/%.1f gpu=%.1f game=%.1f audio+vblank=%.1f "
                              "arrive=%.1f gpuEnd=%.1f%s bottom=%.1f pre=%.1f log=%.1f@%.0f",
                              (unsigned long)sStats.frames, gap, sDropsQuiet, sStats.cpuMs,
                              voxel->updateMs, voxel->worldMs, voxel->atlasMs,
                              voxel->meshMs - voxel->atlasMs, voxel->spritesMs,
+                             voxel->streamMs, voxel->animMs, voxel->draftMs,
                              voxel->afterMs, voxel->afterBudgetMs, sStats.gpuMs,
                              timing->gameMs, timing->vblankMs, arrive, gpuEnd,
                              arrive > 17.0f ? " (cpu late)" : gpuEnd > 15.5f ? " (gpu late)" : "",
@@ -5423,20 +5413,7 @@ void CtrVideo_Present(void)
 #endif
     /* Queued in the frame, behind the drawing into sBottom (BottomTransfer). */
     if (bottom) BottomTransfer();
-#if CTR_VOXEL_ENABLED
-    /* The GPU already running (GpuStartAtSplit): the heap is flushed before
-     * the last split is queued, where FrameEnd would flush it after. */
-    if (sGpuEarly)
-    {
-        FlushLinear();
-        C3D_FrameEnd(GX_CMDLIST_FLUSH);
-    }
-    else
-#endif
-        C3D_FrameEnd(0);
-#if CTR_VOXEL_ENABLED
-    sGpuEarly = false;
-#endif
+    C3D_FrameEnd(0);
     ++sStats.frames;
     ++sFpsFrames;
     sStats.cpuMs = (svcGetSystemTick() - start) * 1000.0 / SYSCLOCK_ARM11;
@@ -5444,7 +5421,7 @@ void CtrVideo_Present(void)
 #if CTR_VOXEL_ENABLED
     /* The GPU draws the frame now: the voxel world builds what comes next in
      * the time the CPU would otherwise wait for the VBlank. */
-    if (voxel || battleUpdated)
+    if (overworld || battleUpdated)
         CtrVoxel_AfterSubmit(start);
 #endif
     uint64_t now = CtrPlatform_Milliseconds();
@@ -5472,13 +5449,13 @@ void CtrVideo_Present(void)
             CtrLog_Write(CTR_LOG_VIDEO,
                          "VOXEL chunks=%u/%u missing=%u pending=%u builds=%u atlas=%u verts=%u "
                          "mesh=%.2fms peak=%.2fms update=%.2fms peak=%.2fms dropped=%u "
-                         "anim=%u/%u refl=%u",
+                         "anim=%u/%u refl=%u drafts=%u/%u",
                          stats->visibleChunks, stats->chunks, stats->chunksMissing,
                          stats->pendingBuilds, stats->meshRebuilds, stats->atlasRebuilds,
                          stats->vertices, stats->meshMs, stats->meshPeakMs,
                          stats->updateMs, stats->updatePeakMs, stats->dropped,
                          stats->animationUploads, stats->animatedMetatiles,
-                         stats->reflections);
+                         stats->reflections, stats->draftsVisible, stats->draftsMade);
         }
 #endif
     }
