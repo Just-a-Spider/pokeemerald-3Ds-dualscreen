@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.0 — 2026-10-05
+
+Architecture and performance:
+
+- Modular bottom screen UI: split the monolithic interface into focused subsystems
+  under `3ds_port/src/bottom_ui/` (`draw`, `screens`, `state`, `touch`), improving
+  maintainability and cache boundaries.
+- Modular video compositor: decomposed PICA200 composition routines into dedicated
+  modules in `3ds_port/src/compositor/` (`3ds_video_battle`, `3ds_video_present`,
+  and core compositor interfaces).
+- Native bottom-screen party menu integration with partial redraw caching.
+- Frame scheduling and cache hashing: Old 3DS frame pacing, draft chunk generation
+  for void fills, and frustum culling to preserve locked 60 FPS in 2D mode.
+
+3D features & Voxel engine:
+
+- Camera rotation & quadrant support: the voxel camera now supports yaw adjustments,
+  with dynamic quadrant-oriented billboarding for entities and tree crowns.
+- 3D battles on overworld: optional 3D battle presentation staged against voxel
+  overworld backgrounds.
+- Experimental Stereoscopic 3D mode: hardware stereo depth rendering on 3DS slider.
+  Note: Stereoscopic 3D is resource-heavy and doubles GPU fillrate workload;
+  recommended for New 3DS or testing (keep disabled on Old 3DS for full 60 FPS).
+- Night/dusk cycle options and dynamic shadow tint adjustments in voxel world.
+
 ## 0.1.2 — 2026-09-30
 
 New and improved:

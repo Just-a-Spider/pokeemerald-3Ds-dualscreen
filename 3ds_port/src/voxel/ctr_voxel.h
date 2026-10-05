@@ -115,4 +115,8 @@ bool CtrVoxel_InBattle(void);
  * GBA pixels (a move shaking the scenery shakes the camera). */
 void CtrVoxel_SetBattleFrame(bool introSliding, float shakeX, float shakeY);
 
+/* Camera rotation and direction mapping */
+float CtrVoxel_GetCameraYaw(void);
+int CtrVoxel_GetCameraQuadrant(void);
+
 #endif

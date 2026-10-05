@@ -32,8 +32,11 @@ void CtrInput_Update(CtrInput *state, const CtrInputSample *sample)
     state->circleDirection = CircleDirection(sample->circleX, sample->circleY, state->circleDirection);
     state->held = buttons & CTR_KEY_GAME;
     /* Explicit D-pad input takes precedence over the stick. This avoids
-     * manufacturing a diagonal/opposite pair by combining both sources. */
-    if (!(buttons & CTR_KEY_DPAD)) state->held |= state->circleDirection;
+     * manufacturing a diagonal/opposite pair by combining both sources.
+     * Holding X frees the Circle Pad for camera rotation. */
+    bool holdingX = (state->physicalHeld & CTR_KEY_X) != 0;
+    if (!(buttons & CTR_KEY_DPAD) && !holdingX) state->held |= state->circleDirection;
+    if (holdingX) state->held = 0;
     state->down = state->held & ~previous;
     state->up = previous & ~state->held;
     state->resetDown = (state->physicalDown & CTR_KEY_X) != 0;

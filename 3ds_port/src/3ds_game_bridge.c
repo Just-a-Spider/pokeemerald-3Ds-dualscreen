@@ -58,6 +58,32 @@ static unsigned FromBcd(u8 value) { return (value >> 4) * 10 + (value & 15); }
 void Platform_GetStatus(struct SiiRtcInfo *rtc) { rtc->status = sRtcStatus; }
 void Platform_SetStatus(struct SiiRtcInfo *rtc) { sRtcStatus = rtc->status; }
 
+float CtrPlatform_GetDayTime(void)
+{
+    time_t now = time(NULL) + sClockOffset;
+    struct tm value;
+    if (localtime_r(&now, &value))
+        return (float)value.tm_hour + (float)value.tm_min / 60.0f + (float)value.tm_sec / 3600.0f;
+    return 12.0f;
+}
+
+void CtrPlatform_AddTimeOffset(int seconds)
+{
+    sClockOffset += seconds;
+    while (sClockOffset >= 86400) sClockOffset -= 86400;
+    while (sClockOffset <= -86400) sClockOffset += 86400;
+}
+
+void CtrPlatform_SetTimeOffset(int seconds)
+{
+    sClockOffset = seconds;
+}
+
+int CtrPlatform_GetTimeOffset(void)
+{
+    return sClockOffset;
+}
+
 void Platform_GetDateTime(struct SiiRtcInfo *rtc)
 {
     time_t now = time(NULL) + sClockOffset;

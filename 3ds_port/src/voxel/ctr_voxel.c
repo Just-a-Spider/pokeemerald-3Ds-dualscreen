@@ -679,11 +679,25 @@ static float sLeadX, sLeadZ;
  * surface (FitToLogicalSurface), which the frustum must not see. */
 static void FitToLogicalSurface(C3D_Mtx *mtx);
 
-static void CameraMatrices(C3D_Mtx *projection, C3D_Mtx *view, bool fit)
+static void CameraMatrices(C3D_Mtx *projection, C3D_Mtx *view, bool fit, float eyeOffset)
 {
-    Mtx_Persp(projection, C3D_AngleFromDegrees(sCamera.fov),
-              (float)CTR_GAME_WIDTH / (float)CTR_GAME_HEIGHT,
-              VOXEL_NEAR, VOXEL_FAR, false);
+    if (eyeOffset != 0.0f)
+    {
+        float dx = sCamera.targetX - sCamera.x;
+        float dy = sCamera.targetY - sCamera.y;
+        float dz = sCamera.targetZ - sCamera.z;
+        float focalDist = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (focalDist < 1.0f) focalDist = 1.0f;
+        Mtx_PerspStereo(projection, C3D_AngleFromDegrees(sCamera.fov),
+                        (float)CTR_GAME_WIDTH / (float)CTR_GAME_HEIGHT,
+                        VOXEL_NEAR, VOXEL_FAR, eyeOffset, focalDist, false);
+    }
+    else
+    {
+        Mtx_Persp(projection, C3D_AngleFromDegrees(sCamera.fov),
+                  (float)CTR_GAME_WIDTH / (float)CTR_GAME_HEIGHT,
+                  VOXEL_NEAR, VOXEL_FAR, false);
+    }
     if (fit)
         FitToLogicalSurface(projection);
     Mtx_LookAt(view,
@@ -715,8 +729,10 @@ static void UpdateFrustum(void)
     float heights[2];
     float rect[4] = {sCamera.targetX, sCamera.targetZ, sCamera.targetX, sCamera.targetZ};
     const C3D_FVec *r;
+    float lateral = fabsf(sinf(C3D_AngleFromDegrees(sCamera.yaw)));
+    float reachMax = (float)VOXEL_VIEW_REACH_MAX - 16.0f * (lateral * lateral);
 
-    CameraMatrices(&projection, &view, false);
+    CameraMatrices(&projection, &view, false, 0.0f);
     Mtx_Multiply(&clip, &projection, &view);
     r = clip.r;
     for (int i = 0; i < 2; ++i)
@@ -756,14 +772,14 @@ static void UpdateFrustum(void)
 
                 /* A ray that never comes down to that height (or does so
                  * behind the eye) is followed out to the bound instead. */
-                if (t < 0.0f || t > 4.0f * VOXEL_VIEW_REACH_MAX)
-                    t = 4.0f * VOXEL_VIEW_REACH_MAX;
+                if (t < 0.0f || t > 4.0f * reachMax)
+                    t = 4.0f * reachMax;
                 GrowRect(rect, sCamera.x + dx * t, sCamera.z + dz * t);
             }
         }
     {
-        float lo[2] = {sCamera.targetX - VOXEL_VIEW_REACH_MAX, sCamera.targetZ - VOXEL_VIEW_REACH_MAX};
-        float hi[2] = {sCamera.targetX + VOXEL_VIEW_REACH_MAX, sCamera.targetZ + VOXEL_VIEW_REACH_MAX};
+        float lo[2] = {sCamera.targetX - reachMax, sCamera.targetZ - reachMax};
+        float hi[2] = {sCamera.targetX + reachMax, sCamera.targetZ + reachMax};
 
         for (int k = 0; k < 2; ++k)
         {
@@ -2211,12 +2227,15 @@ static unsigned OpenTiles(const ChunkSite *site);
  */
 static uint32_t SiteHash(const ChunkSite *site)
 {
+    uint32_t h;
 #if CTR_VOXEL_LIGHTING
     if (!site->inst->indoor)
-        return VoxelLighting_Hash(site->x0, site->y0, site->x1, site->y1);
+        h = VoxelLighting_Hash(site->x0, site->y0, site->x1, site->y1);
+    else
 #endif
-    return VoxelWorld_BlockHash(site->x0 - 1, site->y0 - VOXEL_CHUNK_MARGIN_NORTH - 1,
-                                site->x1 + 1, site->y1 + 2);
+        h = VoxelWorld_BlockHash(site->x0 - 1, site->y0 - VOXEL_CHUNK_MARGIN_NORTH - 1,
+                                 site->x1 + 1, site->y1 + 2);
+    return h ^ ((uint32_t)CtrVoxel_GetCameraQuadrant() * 0x9e3779b9u);
 }
 
 /*
@@ -2340,10 +2359,16 @@ static bool JobValid(void)
 {
     const VoxelAtlasSlot *atlas = sJob.atlas;
 
-    return sJob.epoch == sEpoch && sJob.beltGrid == sBeltGrid
-        && atlas->valid && atlas->generation == sJob.atlasGeneration
-        && atlas->primaryTileset == sJob.site.inst->primaryTileset
-        && atlas->secondaryTileset == sJob.site.inst->secondaryTileset;
+    if (!atlas->valid || atlas->generation != sJob.atlasGeneration
+     || atlas->primaryTileset != sJob.site.inst->primaryTileset
+     || atlas->secondaryTileset != sJob.site.inst->secondaryTileset
+     || sJob.beltGrid != sBeltGrid)
+        return false;
+
+    if (sJob.epoch != sEpoch)
+        sJob.epoch = sEpoch;
+
+    return true;
 }
 
 #define VOXEL_MODEL_SLICE_TRIANGLES 64u
@@ -2443,8 +2468,10 @@ static void JobStep(void)
     case JOB_GROUND:
     {
         /* A few cells at a time: over a drawn mountain one row of lit relief
-         * lattice was 6 ms on hardware, more than a frame's spare time. */
-        int x1 = sJob.col + VOXEL_GROUND_SLICE_CELLS;
+         * lattice was 6 ms on hardware, more than a frame's spare time.
+         * Indoor chunks have no relief or lighting: emit full row immediately. */
+        int cells = inst->indoor ? 16 : VOXEL_GROUND_SLICE_CELLS;
+        int x1 = sJob.col + cells;
 
         if (x1 > site->x1)
             x1 = site->x1;
@@ -3470,7 +3497,7 @@ static bool StartNextJob(float elapsed, float holeMs, float aheadMs)
 
         if (r->done)
             continue;
-        if (sHolesOnly && need != NEED_HOLE && !RequestOverdue(r))
+        if (sHolesOnly && need != NEED_HOLE && !RequestOverdue(r) && !inst->indoor)
             continue; /* sorted: holes come first */
         if (elapsed >= (forView ? holeMs : aheadMs))
             return false; /* sorted: nothing after it is more urgent */
@@ -4613,51 +4640,138 @@ static VoxelLight LightFor(bool indoor)
 #if CTR_VOXEL_LIGHTING
     if (!indoor)
     {
+        if (CtrSettings_DayNight())
+        {
+            float t = CtrPlatform_GetDayTime();
+            VoxelLight night = {
+                {0.52f, 0.58f, 0.78f}, {0.36f, 0.38f, 0.52f}, 0.22f,
+                0.98f, 1.02f, 0.03f, 0.10f, 0.25f
+            };
+            VoxelLight dawn = {
+                {1.08f, 0.88f, 0.75f}, {0.82f, 0.84f, 1.00f}, 0.18f,
+                0.95f, 1.05f, 0.14f, 0.09f, 0.75f
+            };
+            VoxelLight day = {
+                {1.03f, 1.00f, 0.95f}, {0.92f, 0.95f, 1.04f}, VOXEL_HAZE_MAX,
+                0.96f, 1.04f, 0.11f, 0.07f, 0.85f
+            };
+            VoxelLight dusk = {
+                {1.18f, 0.74f, 0.50f}, {0.68f, 0.62f, 0.85f}, 0.22f,
+                0.94f, 1.06f, 0.18f, 0.14f, 0.95f
+            };
+
+            float duskStart = CtrSettings_DuskStart();
+            float nightStart = CtrSettings_NightStart();
+            float duskPeak = (duskStart + nightStart) * 0.5f;
+
+            VoxelLight from, to;
+            float factor = 0.0f;
+
+            if (t < 4.5f || t >= nightStart + 1.0f)
+            {
+                light = night;
+            }
+            else if (t < 6.5f)
+            {
+                from = night; to = dawn;
+                factor = (t - 4.5f) / 2.0f;
+                goto interpolate_daynight;
+            }
+            else if (t < 8.5f)
+            {
+                from = dawn; to = day;
+                factor = (t - 6.5f) / 2.0f;
+                goto interpolate_daynight;
+            }
+            else if (t < duskStart)
+            {
+                light = day;
+            }
+            else if (t < duskPeak)
+            {
+                from = day; to = dusk;
+                factor = (t - duskStart) / (duskPeak - duskStart);
+                goto interpolate_daynight;
+            }
+            else if (t < nightStart + 1.0f)
+            {
+                from = dusk; to = night;
+                factor = (t - duskPeak) / (nightStart + 1.0f - duskPeak);
+                goto interpolate_daynight;
+            }
+            else
+            {
+                light = night;
+            }
+            goto apply_weather;
+
+        interpolate_daynight:
+            factor = 0.5f - 0.5f * cosf(factor * 3.14159265f);
+            for (int i = 0; i < 3; ++i)
+            {
+                light.sun[i] = from.sun[i] + (to.sun[i] - from.sun[i]) * factor;
+                light.shade[i] = from.shade[i] + (to.shade[i] - from.shade[i]) * factor;
+            }
+            light.haze = from.haze + (to.haze - from.haze) * factor;
+            light.dappleLow = from.dappleLow + (to.dappleLow - from.dappleLow) * factor;
+            light.dappleHigh = from.dappleHigh + (to.dappleHigh - from.dappleHigh) * factor;
+            light.rays = from.rays + (to.rays - from.rays) * factor;
+            light.bloom = from.bloom + (to.bloom - from.bloom) * factor;
+            light.motes = from.motes + (to.motes - from.motes) * factor;
+        }
+
+    apply_weather:
+        {
+            float lateral = fabsf(sinf(C3D_AngleFromDegrees(sCamera.yaw)));
+            if (lateral > 0.05f)
+                light.haze = fminf(light.haze + 0.22f * (lateral * lateral), 0.45f);
+        }
         switch (VoxelWorld_Weather())
         {
         case VOXEL_WEATHER_SUN:
-            light.sun[0] = 1.04f; light.sun[1] = 1.01f; light.sun[2] = 0.93f;
-            light.haze = 0.12f;
-            light.dappleLow = 0.94f; light.dappleHigh = 1.07f;
-            light.rays = 0.14f;
-            light.bloom = 0.10f;
-            light.motes = 1.00f;
+            light.rays = fminf(light.rays + 0.05f, 0.20f);
+            light.bloom = fminf(light.bloom + 0.03f, 0.18f);
             break;
         case VOXEL_WEATHER_RAIN:
-            /* Overcast: no sun to break into patches, rays or glinting dust. */
-            light.sun[0] = 0.81f; light.sun[1] = 0.88f; light.sun[2] = 0.98f;
-            light.shade[0] = 0.82f; light.shade[1] = 0.89f; light.shade[2] = 1.00f;
-            light.haze = 0.30f;
-            light.dappleLow = light.dappleHigh = 1.0f;
+            for (int i = 0; i < 3; ++i)
+            {
+                light.sun[i] *= 0.80f;
+                light.shade[i] *= 0.85f;
+            }
+            light.haze = fmaxf(light.haze, 0.30f);
             light.rays = 0.0f;
-            light.bloom = 0.08f;
             light.motes = 0.0f;
             break;
         case VOXEL_WEATHER_FOG:
-            /* Fog glows: more bloom, and no dust to see in it. */
-            light.sun[0] = 0.95f; light.sun[1] = 0.98f; light.sun[2] = 1.00f;
-            light.haze = 0.52f;
-            light.dappleLow = 0.95f; light.dappleHigh = 1.02f;
+            for (int i = 0; i < 3; ++i)
+            {
+                light.sun[i] *= 0.90f;
+                light.shade[i] *= 0.94f;
+            }
+            light.haze = fmaxf(light.haze, 0.48f);
+            light.bloom = fmaxf(light.bloom, 0.16f);
             light.rays = 0.0f;
-            light.bloom = 0.18f;
             light.motes = 0.0f;
             break;
         case VOXEL_WEATHER_PARTICLES:
-            /* The weather's own ash or sand fills the air instead. */
-            light.sun[0] = 0.93f; light.sun[1] = 0.92f; light.sun[2] = 0.88f;
-            light.haze = 0.36f;
-            light.dappleLow = 0.92f; light.dappleHigh = 1.03f;
+            for (int i = 0; i < 3; ++i)
+            {
+                light.sun[i] *= 0.88f;
+                light.shade[i] *= 0.90f;
+            }
+            light.haze = fmaxf(light.haze, 0.36f);
             light.rays = 0.0f;
-            light.bloom = 0.12f;
             light.motes = 0.0f;
             break;
         case VOXEL_WEATHER_SHADE:
-            light.sun[0] = 0.92f; light.sun[1] = 0.95f; light.sun[2] = 0.98f;
-            light.haze = 0.25f;
-            light.dappleLow = 0.92f; light.dappleHigh = 1.03f;
+            for (int i = 0; i < 3; ++i)
+            {
+                light.sun[i] *= 0.92f;
+                light.shade[i] *= 0.95f;
+            }
+            light.haze = fmaxf(light.haze, 0.25f);
             light.rays = 0.0f;
-            light.bloom = 0.12f;
-            light.motes = 0.40f;
+            light.motes *= 0.5f;
             break;
         default:
             break;
@@ -4679,8 +4793,10 @@ static VoxelLight LightFor(bool indoor)
 static void SetGrade(const VoxelLight *light)
 {
     float eye = sCamera.distance / cosf(C3D_AngleFromDegrees(sCamera.pitch));
-    float fogStart = eye * VOXEL_HAZE_START;
-    float fogScale = light->haze / (eye * VOXEL_HAZE_RAMP);
+    float lateral = fabsf(sinf(C3D_AngleFromDegrees(sCamera.yaw)));
+    float latSq = lateral * lateral;
+    float fogStart = eye * (VOXEL_HAZE_START - 0.20f * latSq);
+    float fogScale = light->haze / (eye * (VOXEL_HAZE_RAMP - 0.15f * latSq));
 
     /* Halved: the texture environment scales by two. */
     C3D_FVUnifSet(GPU_VERTEX_SHADER, sUniShadeTint,
@@ -5313,8 +5429,6 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
 
     sBloomStrength = 0.0f;
 
-    /* Stereoscopy is V8; the first milestone renders one eye. */
-    (void)eyeOffset;
     if (!sReady || sDrawCount == 0)
         return;
 
@@ -5322,7 +5436,7 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
     C3D_FrameDrawOn(target);
 
     /* The camera the frustum was cut from in the update (UpdateFrustum). */
-    CameraMatrices(&projection, &view, true);
+    CameraMatrices(&projection, &view, true, eyeOffset);
 
     C3D_BindProgram(&sProgram);
 
@@ -5455,7 +5569,22 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
         C3D_TexEnvOpAlpha(env, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_R, GPU_TEVOP_A_SRC_ALPHA);
         C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
         C3D_TexEnvScale(env, C3D_Alpha, GPU_TEVSCALE_2);
-        C3D_TexEnvColor(env, 0xFF281408u);
+        uint32_t shadowColor = 0xFF281408u;
+        if (CtrSettings_DayNight() && !indoor)
+        {
+            float t = CtrPlatform_GetDayTime();
+            if (t < 5.0f || t >= 21.0f)
+                shadowColor = 0xCC301808u; /* midnight cool blue */
+            else if (t < 7.0f || t >= 18.5f)
+                shadowColor = 0xFF181028u; /* dusk / twilight violet-indigo */
+            else
+                shadowColor = 0xFF281408u; /* crisp day shadow */
+        }
+        else if (indoor)
+        {
+            shadowColor = 0xCC181414u; /* soft neutral indoor ambient contact shadow */
+        }
+        C3D_TexEnvColor(env, shadowColor);
         C3D_DrawArrays(GPU_TRIANGLES, VOXEL_SHADOW_FIRST, sShadowVertices);
         C3D_ColorLogicOp(GPU_LOGICOP_COPY);
         C3D_DepthTest(true, GPU_GREATER, GPU_WRITE_ALL);
@@ -5507,7 +5636,9 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
         }
 #endif
         FadeFor(true);
+        C3D_DepthMap(true, -1.0f, 0.002f);
         C3D_DrawArrays(GPU_TRIANGLES, 0, sSpriteVertices);
+        C3D_DepthMap(true, -1.0f, 0.0f);
     }
 #if CTR_VOXEL_LIGHTING
     /* Before the rays, which leave the orthographic projection behind. */
@@ -5532,4 +5663,29 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
     /* The 2D compositor sets up stage 0 only. */
     for (int i = 1; i < 5; ++i)
         C3D_TexEnvInit(C3D_GetTexEnv(i));
+}
+
+float CtrVoxel_GetCameraYaw(void)
+{
+    return sCamera.yaw;
+}
+
+int CtrVoxel_GetCameraQuadrant(void)
+{
+#if CTR_VOXEL_ENABLED
+    if (!CtrSettings_Voxel())
+        return 0;
+    int q = (int)floorf((sCamera.yaw + 45.0f) / 90.0f);
+    return ((q % 4) + 4) % 4;
+#else
+    return 0;
+#endif
+}
+
+void CtrVoxel_InvalidateTreeQuadrant(void)
+{
+    ++sEpoch;
+    for (unsigned i = 0; i < VOXEL_CHUNK_SLOTS; ++i)
+        if (sChunks[i].used)
+            sChunks[i].hash = 0;
 }

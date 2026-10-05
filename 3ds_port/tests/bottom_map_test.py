@@ -9,7 +9,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cc', default='gcc')
     args = parser.parse_args()
-    bottom = (ROOT / 'src/3ds_bottom_ui.c').read_text()
+    bottom = (ROOT / 'src/3ds_bottom_ui.c').read_text() + '\n' + (ROOT / 'src/bottom_ui/bottom_ui_screens.c').read_text()
     source = r'''
 #include <assert.h>
 #include <stdbool.h>

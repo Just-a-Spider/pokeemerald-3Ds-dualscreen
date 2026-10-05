@@ -91,10 +91,12 @@ The voxel overworld is **off by default**. Open **OPTION** on the bottom
 screen and enable **VOXEL 3D**, then adjust **3D ANGLE** and **3D ZOOM** to
 set your camera.
 
-> **3D mode is a work in progress.** Only some buildings, trees, signposts
-> and terrain relief are modelled today. Most of the map and nearly all
-> interiors are still shown flat. More areas will be modelled as the
-> project moves forward.
+> **3D mode is experimental and resource-heavy.** Voxel overworld and
+> stereoscopic 3D rendering increase GPU workload significantly and may reduce
+> frame rate on Old 3DS / 2DS models. For solid 60 FPS on all systems, keep
+> 2D mode active with full dual-screen touch interface support. Most of the map
+> and nearly all interiors are currently flat; more areas and optimizations
+> will be introduced in future updates.
 
 ## Getting started
 

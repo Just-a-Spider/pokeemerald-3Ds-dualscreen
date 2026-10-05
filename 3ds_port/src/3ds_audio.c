@@ -198,8 +198,15 @@ void CtrAudio_Queue(const float *interleaved, int frames)
          */
         union { float f; int32_t i; } magic;
         int32_t sample;
+        float s = interleaved[i] * 0.70f;
 
-        magic.f = interleaved[i] * 32767.0f + 12582912.0f;
+        /* Soft-knee limiter for combined DirectSound + CGB peaks */
+        if (s > 0.95f)
+            s = 0.95f + (s - 0.95f) / (1.0f + (s - 0.95f) * 2.0f);
+        else if (s < -0.95f)
+            s = -0.95f + (s + 0.95f) / (1.0f - (s + 0.95f) * 2.0f);
+
+        magic.f = s * 32767.0f + 12582912.0f;
         sample = magic.i - 0x4B400000;
         if (sample > 32767)
             sample = 32767;

@@ -26,6 +26,10 @@ static int TestClose(FILE *file) {
     rewind(file); size_t n = fread(saved, 1, sizeof(saved)-1, file); saved[n] = 0;
     ++writes; int rc = fclose(file); return fault == 2 ? -1 : rc;
 }
+static int sTimeOffset = 0;
+void CtrPlatform_SetTimeOffset(int seconds) { sTimeOffset = seconds; }
+int CtrPlatform_GetTimeOffset(void) { return sTimeOffset; }
+
 void CtrLog_Write(CtrLogCategory category, const char *fmt, ...) {
     (void)fmt; if (category == CTR_LOG_ERROR) ++errors;
 }

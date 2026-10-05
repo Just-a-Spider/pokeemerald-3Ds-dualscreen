@@ -71,6 +71,20 @@ void CtrSettings_SetVoxelBattle(bool on);
 /* The FPS counter on the top screen, off by default. */
 bool CtrSettings_ShowFps(void);
 void CtrSettings_SetShowFps(bool on);
+/* Stereoscopic 3D rendering for voxel mode (off by default for Old 3DS performance). */
+bool CtrSettings_VoxelStereo(void);
+void CtrSettings_SetVoxelStereo(bool on);
+/* Day / night lighting cycle in the voxel world. */
+bool CtrSettings_DayNight(void);
+void CtrSettings_SetDayNight(bool on);
+float CtrSettings_DuskStart(void);
+float CtrSettings_NightStart(void);
+float CtrPlatform_GetDayTime(void);
+void CtrPlatform_AddTimeOffset(int seconds);
+void CtrPlatform_SetTimeOffset(int seconds);
+int CtrPlatform_GetTimeOffset(void);
+bool CtrPlatform_GetFastForward(void);
+void CtrPlatform_SetFastForward(bool on);
 
 void CtrGame_Init(void);
 void CtrGame_Frame(void);
@@ -80,6 +94,12 @@ uint32_t CtrGame_APresses(void);
 uint32_t CtrGame_Checks(void);
 /* The field is on screen (CB2_Overworld), whichever way it is drawn. */
 bool CtrGame_IsOverworld(void);
+
+/* Voxel camera rotation and direction mapping */
+float CtrVoxel_GetCameraYaw(void);
+int CtrVoxel_GetCameraQuadrant(void);
+uint16_t CtrVoxel_RotateDpadKeys(uint16_t keys, int q);
+uint8_t CtrVoxel_ToCameraRelativeDirection(uint8_t direction);
 
 /* C identifiers cannot start with '3'. Logs retain the plan's 3DS_STUB tag. */
 #define CTR_STUB(id, message) CtrLog_Write(CTR_LOG_GAME, "[3DS_STUB] %s: %s", id, message)

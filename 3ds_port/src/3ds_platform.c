@@ -58,6 +58,18 @@ uint64_t CtrPlatform_FrameCount(void)
 const CtrTiming *CtrPlatform_GetTiming(void) { return &sTiming; }
 void CtrPlatform_NoteBottom(float ms) { sTiming.bottomMs = ms; }
 
+static bool sFastForward = false;
+
+bool CtrPlatform_GetFastForward(void)
+{
+    return sFastForward;
+}
+
+void CtrPlatform_SetFastForward(bool on)
+{
+    sFastForward = on;
+}
+
 bool CtrPlatform_Init(void)
 {
     gfxInitDefault();
@@ -136,6 +148,38 @@ bool CtrPlatform_BeginFrame(void)
     else sExitStart = 0;
     if (input->resetDown)
         CtrPlatform_RequestReset();
+
+    /* Fast-Forward toggle: R + START */
+    if (((input->physicalDown & CTR_KEY_START) && (input->physicalHeld & CTR_KEY_R))
+     || ((input->physicalDown & CTR_KEY_R) && (input->physicalHeld & CTR_KEY_START)))
+    {
+        sFastForward = !sFastForward;
+        CtrLog_Write(CTR_LOG_INPUT, "HOTKEY R+START: toggle FastForward -> %d", sFastForward);
+        CtrInput_Mask(CTR_KEY_START);
+    }
+
+    if (input->physicalDown & CTR_KEY_Y)
+    {
+        if (input->physicalHeld & CTR_KEY_L)
+        {
+            CtrSettings_SetShowFps(!CtrSettings_ShowFps());
+            CtrLog_Write(CTR_LOG_INPUT, "HOTKEY L+Y: toggle HUD -> %d", CtrSettings_ShowFps());
+        }
+        else if (input->physicalHeld & CTR_KEY_R)
+        {
+#if CTR_VOXEL_ENABLED
+            CtrSettings_SetVoxelStereo(!CtrSettings_VoxelStereo());
+            CtrLog_Write(CTR_LOG_INPUT, "HOTKEY R+Y: toggle VOXEL STEREO -> %d", CtrSettings_VoxelStereo());
+#endif
+        }
+        else
+        {
+#if CTR_VOXEL_ENABLED
+            CtrSettings_SetVoxel(!CtrSettings_Voxel());
+            CtrLog_Write(CTR_LOG_INPUT, "HOTKEY Y: toggle VOXEL -> %d", CtrSettings_Voxel());
+#endif
+        }
+    }
     if (sReset)
     {
         sReset = false;
@@ -160,6 +204,23 @@ void CtrPlatform_EndFrame(void)
      * C3D owns display pacing and swapping; no second VBlank wait. */
     if (sHooks.vblank)
         sHooks.vblank();
+
+    static bool sFfSkip = false;
+    if (sFastForward)
+    {
+        sFfSkip = !sFfSkip;
+        if (sFfSkip)
+        {
+            ++sFrames;
+            sWaiting = false;
+            return;
+        }
+    }
+    else
+    {
+        sFfSkip = false;
+    }
+
     uint64_t presentStart = svcGetSystemTick();
     /* Before the present, which reads them: its DROP line is about the frame
      * that just ran, and the voxel builds after FrameEnd estimate the next. */
@@ -367,4 +428,42 @@ void Port_ProfAcc(const char *name)
         }
     }
     sProfLast = now;
+}
+
+uint16_t CtrVoxel_RotateDpadKeys(uint16_t keys, int q)
+{
+    if (q == 0 || !(keys & 0x00F0))
+        return keys;
+
+    uint16_t other = keys & ~0x00F0;
+    uint16_t dpad = 0;
+
+    static const uint16_t sUpMask[4]    = {0x0040, 0x0020, 0x0080, 0x0010};
+    static const uint16_t sDownMask[4]  = {0x0080, 0x0010, 0x0040, 0x0020};
+    static const uint16_t sLeftMask[4]  = {0x0020, 0x0080, 0x0010, 0x0040};
+    static const uint16_t sRightMask[4] = {0x0010, 0x0040, 0x0020, 0x0080};
+
+    if (keys & 0x0040) dpad |= sUpMask[q];
+    if (keys & 0x0080) dpad |= sDownMask[q];
+    if (keys & 0x0020) dpad |= sLeftMask[q];
+    if (keys & 0x0010) dpad |= sRightMask[q];
+
+    return other | dpad;
+}
+
+uint8_t CtrVoxel_ToCameraRelativeDirection(uint8_t direction)
+{
+    int q = CtrVoxel_GetCameraQuadrant();
+    if (q == 0 || direction == 0)
+        return direction;
+
+    static const uint8_t sCamRel[4][9] = {
+        [0] = {0, 1, 2, 3, 4, 5, 6, 7, 8},
+        [1] = {0, 3, 4, 2, 1, 7, 5, 8, 6},
+        [2] = {0, 2, 1, 4, 3, 8, 7, 6, 5},
+        [3] = {0, 4, 3, 1, 2, 6, 8, 5, 7},
+    };
+    if (direction <= 8)
+        return sCamRel[q][direction];
+    return direction;
 }

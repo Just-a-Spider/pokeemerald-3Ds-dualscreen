@@ -13,10 +13,16 @@
 #include "event_object_movement.h"
 #include "field_player_avatar.h"
 #include "constants/field_effects.h"
+#include "constants/event_objects.h"
 #include "gba/io_reg.h"
 #include "port_platform.h"
+#include "field_door.h"
+#include "field_effect.h"
+#include "field_weather.h"
+#include "constants/weather.h"
 
 #include "3ds_video.h"
+#include "3ds_platform.h"
 #include "voxel_entities.h"
 #include "voxel_grade.h"
 #include "voxel_relief.h"
@@ -63,7 +69,7 @@ typedef struct
     bool footPadExact;
 } VoxelSpriteSlot;
 
-static VoxelSpriteSlot sSlots[VOXEL_SPRITE_SLOTS];
+static VoxelSpriteSlot sSlots[VOXEL_TOTAL_SLOTS];
 /* The field effect sprite a slot of an unused object event shows, plus one;
  * 0 for none (VoxelEntities_Emit). */
 static u8 sSlotEffect[VOXEL_SPRITE_SLOTS];
@@ -71,13 +77,25 @@ static int sPlayerVertexFirst = -1;
 
 int VoxelEntities_PlayerVertexFirst(void) { return sPlayerVertexFirst; }
 
+static struct {
+    bool active;
+    int x, y;
+    int size;
+    const u8 *tiles;
+    const u8 *paletteNums;
+    unsigned frameOffset;
+    int partnerX, partnerY;
+} sDoorAnimState;
+
 void VoxelEntities_Reset(void)
 {
-    for (unsigned i = 0; i < VOXEL_SPRITE_SLOTS; ++i)
+    for (unsigned i = 0; i < VOXEL_TOTAL_SLOTS; ++i)
     {
         sSlots[i].valid = false;
-        sSlotEffect[i] = 0;
+        if (i < VOXEL_SPRITE_SLOTS)
+            sSlotEffect[i] = 0;
     }
+    sDoorAnimState.active = false;
 }
 
 /* ── OAM geometry ───────────────────────────────────────────────────────── */
@@ -99,6 +117,14 @@ static void GetSpriteDimensions(u8 shape, u8 size, int *w, int *h)
 
 /* ── Movement interpolation ─────────────────────────────────────────────── */
 
+static bool IsJumpMovement(u8 actionId)
+{
+    return (actionId >= MOVEMENT_ACTION_JUMP_2_DOWN && actionId <= MOVEMENT_ACTION_JUMP_2_RIGHT)
+        || (actionId >= MOVEMENT_ACTION_JUMP_SPECIAL_DOWN && actionId <= MOVEMENT_ACTION_JUMP_SPECIAL_RIGHT)
+        || (actionId >= MOVEMENT_ACTION_JUMP_DOWN && actionId <= MOVEMENT_ACTION_JUMP_IN_PLACE_RIGHT_LEFT)
+        || (actionId >= MOVEMENT_ACTION_ACRO_WHEELIE_JUMP_DOWN && actionId <= MOVEMENT_ACTION_ACRO_WHEELIE_JUMP_RIGHT);
+}
+
 /*
  * Sub-tile progress in [0,1]: 0 at previousCoords, 1 at currentCoords.
  *
@@ -113,6 +139,33 @@ static float GetMovementProgress(const struct ObjectEvent *obj, const struct Spr
     /* Idle: ShiftStillObjectEventCoords has made previous == current. */
     if (!obj->singleMovementActive && !obj->heldMovementActive)
         return 1.0f;
+
+    /* Ledge jumps and hop animations use data[6] as step timer */
+    if (IsJumpMovement(obj->movementActionId))
+    {
+        int timer = (int)(u16)sprite->data[6];
+        int distance = (int)(u16)sprite->data[4];
+        int halfLen = (obj->movementActionId >= MOVEMENT_ACTION_JUMP_SPECIAL_DOWN &&
+                       obj->movementActionId <= MOVEMENT_ACTION_JUMP_SPECIAL_RIGHT) ? 32 : 16;
+        if (distance == 2 /* JUMP_DISTANCE_FAR */)
+            t = (float)(timer % halfLen) / (float)halfLen;
+        else
+            t = (float)timer / (float)halfLen;
+
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        return t;
+    }
+
+    /* Slow walk actions (data[4] is timer, 32 frames) */
+    if (obj->movementActionId >= 0x18 && obj->movementActionId <= 0x23)
+    {
+        timer = (int)(u16)sprite->data[4];
+        t = (float)timer / 32.0f;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        return t;
+    }
 
     speed = (int)(u16)sprite->data[4];
     timer = (int)(u16)sprite->data[5];
@@ -464,6 +517,80 @@ static void EmitDecal(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsign
 #define VOXEL_CAST_SHADOW_LIFT 0.03f    /* over decals (0.02) */
 #define VOXEL_CAST_SHADOW_LIT 0.70f     /* sample at or below: no sun */
 
+static void GetDynamicShadowVector(float *outSx, float *outSz, float *outAlpha, float height)
+{
+    if (!CtrSettings_DayNight())
+    {
+        *outSx = VOXEL_SUN_DX * height;
+        *outSz = VOXEL_SUN_DZ * height;
+        *outAlpha = VOXEL_CAST_SHADOW_ALPHA;
+    }
+    else
+    {
+        float t = CtrPlatform_GetDayTime();
+
+        if (t >= 5.5f && t <= 19.5f)
+        {
+            /* Daytime: Sun progresses from East (+X) at dawn to West (-X) at dusk.
+             * 5:30 (Dawn) -> 12:30 (Noon) -> 19:30 (Dusk) */
+            float s = (t - 5.5f) / 14.0f;
+            float angle = s * 3.1415926535f;
+            float sinA = sinf(angle); /* 0 at dawn/dusk, 1.0 at midday */
+            float cosA = cosf(angle); /* +1 at sunrise (East), 0 at midday, -1 at sunset (West) */
+
+            /* Shadow projects opposite to sun position:
+             * Morning (Sun in East): shadow points West (-X)
+             * Evening (Sun in West): shadow points East (+X)
+             * Midday: shadow is short under feet, slight North bias */
+            float stretch = 0.45f + 0.80f * (1.0f - sinA);
+            *outSx = -cosA * stretch * height;
+            *outSz = (0.20f + 0.35f * (1.0f - sinA)) * height;
+            *outAlpha = 0.26f + 0.12f * sinA;
+        }
+        else
+        {
+            /* Night: Soft moon cast */
+            float nt = (t < 5.5f) ? (t + 4.5f) : (t - 19.5f);
+            float ns = nt / 10.0f;
+            float nAngle = ns * 3.1415926535f;
+            float sinM = sinf(nAngle);
+            float cosM = cosf(nAngle);
+
+            *outSx = -cosM * 0.60f * height;
+            *outSz = 0.30f * height;
+            *outAlpha = 0.14f * sinM;
+        }
+    }
+
+    /* Weather shadow attenuation: rain, storms, fog, sandstorm diffuse the direct sun cast */
+    u8 weather = GetCurrentWeather();
+    switch (weather)
+    {
+    case WEATHER_RAIN:
+        *outAlpha *= 0.50f;
+        break;
+    case WEATHER_RAIN_THUNDERSTORM:
+    case WEATHER_DOWNPOUR:
+        *outAlpha *= 0.30f;
+        break;
+    case WEATHER_FOG_HORIZONTAL:
+    case WEATHER_FOG_DIAGONAL:
+        *outAlpha *= 0.35f;
+        break;
+    case WEATHER_SANDSTORM:
+        *outAlpha *= 0.40f;
+        break;
+    case WEATHER_SHADE:
+        *outAlpha *= 0.55f;
+        break;
+    case WEATHER_DROUGHT:
+        *outAlpha = fminf(*outAlpha * 1.25f, 0.45f);
+        break;
+    default:
+        break;
+    }
+}
+
 static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, unsigned index,
                            float worldX, float worldZ, float rightX, float rightZ, float stretch,
                            float light)
@@ -482,7 +609,8 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
     float cx = worldX + 0.5f, cz = worldZ + 0.5f;
     float ax = cx - rightX * halfW, az = cz - rightZ * halfW;
     float bx = cx + rightX * halfW, bz = cz + rightZ * halfW;
-    float sx = VOXEL_SUN_DX * height, sz = VOXEL_SUN_DZ * height;
+    float sx, sz, maxAlpha;
+    GetDynamicShadowVector(&sx, &sz, &maxAlpha, height);
     /* Each corner on the ground under it: at a face's foot the ground under
      * the shadow's far end is not the ground under the feet. */
     float ya = VoxelRelief_LiftAt(ax, az) + VOXEL_CAST_SHADOW_LIFT;
@@ -497,12 +625,56 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
         return;
     if (strength > 1.0f)
         strength = 1.0f;
-    strength *= VOXEL_CAST_SHADOW_ALPHA;
+    strength *= maxAlpha;
     VoxelBuilder_Quad(shadows,
         &(VoxelVertex){ax,      ya, az + za,      u0, v1, strength},
         &(VoxelVertex){bx,      yb, bz + zb,      u1, v1, strength},
         &(VoxelVertex){bx + sx, yc, bz + sz + zc, u1, v0, strength},
         &(VoxelVertex){ax + sx, yd, az + sz + zd, u0, v0, strength});
+}
+
+static void EmitIndoorContactShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, unsigned index,
+                                    float worldX, float worldZ, float rightX, float rightZ)
+{
+    unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    float u0 = baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float u1 = (baseX + slot->width) / (float)VOXEL_SPRITE_ATLAS_DIM;
+    int rows = VisibleRows(slot);
+    if (rows <= 0)
+        return;
+    float v0 = 1.0f - baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float v1 = 1.0f - (baseY + rows) / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.40f;
+    float cx = worldX + 0.5f, cz = worldZ + 0.5f;
+
+    /* Soft ambient contact pool under feet, slightly elliptical */
+    float forwardX = -rightZ;
+    float forwardZ =  rightX;
+    float halfD = 0.20f;
+
+    float ax = cx - rightX * halfW - forwardX * halfD;
+    float az = cz - rightZ * halfW - forwardZ * halfD;
+    float bx = cx + rightX * halfW - forwardX * halfD;
+    float bz = cz + rightZ * halfW - forwardZ * halfD;
+    float cx2 = cx + rightX * halfW + forwardX * halfD;
+    float cz2 = cz + rightZ * halfW + forwardZ * halfD;
+    float dx = cx - rightX * halfW + forwardX * halfD;
+    float dz = cz - rightZ * halfW + forwardZ * halfD;
+
+    float ya = VoxelRelief_LiftAt(ax, az) + VOXEL_CAST_SHADOW_LIFT;
+    float yb = VoxelRelief_LiftAt(bx, bz) + VOXEL_CAST_SHADOW_LIFT;
+    float yc = VoxelRelief_LiftAt(cx2, cz2) + VOXEL_CAST_SHADOW_LIFT;
+    float yd = VoxelRelief_LiftAt(dx, dz) + VOXEL_CAST_SHADOW_LIFT;
+    float za = VoxelRelief_ShiftAt(ax, az), zb = VoxelRelief_ShiftAt(bx, bz);
+    float zc = VoxelRelief_ShiftAt(cx2, cz2), zd = VoxelRelief_ShiftAt(dx, dz);
+
+    float strength = 0.22f;
+    VoxelBuilder_Quad(shadows,
+        &(VoxelVertex){ax,  ya, az + za,  u0, v1, strength},
+        &(VoxelVertex){bx,  yb, bz + zb,  u1, v1, strength},
+        &(VoxelVertex){cx2, yc, cz2 + zc, u1, v0, strength},
+        &(VoxelVertex){dx,  yd, dz + zd,  u0, v0, strength});
 }
 #endif
 
@@ -714,6 +886,127 @@ static int EffectOwner(const struct Sprite *sprite, const VoxelObjectCard *objec
     return best;
 }
 
+static void DecodeDoorFrame(uint16_t *atlas, const u8 *tiles, unsigned offset,
+                            int size, const u8 *paletteNums)
+{
+    unsigned baseX = (VOXEL_DOOR_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    unsigned baseY = (VOXEL_DOOR_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    const u8 *frameTiles = tiles + offset;
+    int totalTiles = (size == 2) ? 16 : 8;
+
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 32; ++x)
+            atlas[CtrVideo_Texel(baseX + (unsigned)x, baseY + (unsigned)y,
+                                 VOXEL_SPRITE_ATLAS_DIM)] = 0;
+
+    for (int t = 0; t < totalTiles; ++t)
+    {
+        const u8 *tileData = frameTiles + t * 32;
+        int tileX, tileY;
+        u8 palIndex;
+
+        if (size == 2)
+        {
+            int m = t / 4;
+            int subtile = t % 4;
+            int mx = (m >= 2) ? 1 : 0;
+            int my = (m % 2);
+            tileX = mx * 16 + (subtile % 2) * 8;
+            tileY = my * 16 + (subtile / 2) * 8;
+            palIndex = paletteNums[my * 4 + subtile];
+        }
+        else
+        {
+            int subtile = t % 4;
+            int my = t / 4;
+            tileX = (subtile % 2) * 8;
+            tileY = my * 16 + (subtile / 2) * 8;
+            palIndex = paletteNums[t];
+        }
+
+        const u16 *pal = (const u16 *)PLTT + (palIndex * 16);
+
+        for (unsigned py = 0; py < 8; ++py)
+        {
+            for (unsigned px = 0; px < 8; ++px)
+            {
+                unsigned index8 = py * 8 + px;
+                unsigned colorIdx = (tileData[index8 / 2] >> ((px & 1) * 4)) & 0xF;
+                if (colorIdx == 0)
+                    continue;
+
+                int outX = tileX + (int)px;
+                int outY = tileY + (int)py;
+                uint16_t texel = VoxelGrade_RGBA5551(pal[colorIdx]);
+                atlas[CtrVideo_Texel(baseX + (unsigned)outX, baseY + (unsigned)outY,
+                                     VOXEL_SPRITE_ATLAS_DIM)] = texel;
+            }
+        }
+    }
+}
+
+static void EmitDoorQuad(VoxelBuilder *builder, int mapX, int mapY, int size)
+{
+    float doorWorldX = (float)(mapX - MAP_OFFSET);
+    float doorWorldZ = (float)(mapY - MAP_OFFSET);
+
+    if (VoxelWorld_InstanceCount() > 0)
+    {
+        const VoxelMapInstance *inst = VoxelWorld_Instance(0);
+        doorWorldX += (float)inst->originX;
+        doorWorldZ += (float)inst->originY;
+    }
+
+    float lift = VoxelRelief_LiftAt(doorWorldX + 0.5f, doorWorldZ + 0.5f);
+    float shift = VoxelRelief_ShiftAt(doorWorldX + 0.5f, doorWorldZ + 0.5f);
+
+    unsigned baseX = (VOXEL_DOOR_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    unsigned baseY = (VOXEL_DOOR_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    int pixelW = size * 16;
+    int pixelH = 32;
+
+    float u0 = (float)baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float u1 = (float)(baseX + pixelW) / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float v0 = 1.0f - (float)baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float v1 = 1.0f - (float)(baseY + pixelH) / (float)VOXEL_SPRITE_ATLAS_DIM;
+
+    float x0 = doorWorldX;
+    float x1 = doorWorldX + (float)size;
+    float y0 = lift;
+    float y1 = lift + 2.0f;
+    float z = doorWorldZ + 1.0f + shift + 0.005f;
+
+    VoxelBuilder_Quad(builder,
+        &(VoxelVertex){x0, y0, z, u0, v1, 1.0f},
+        &(VoxelVertex){x1, y0, z, u1, v1, 1.0f},
+        &(VoxelVertex){x1, y1, z, u1, v0, 1.0f},
+        &(VoxelVertex){x0, y1, z, u0, v0, 1.0f});
+}
+
+static bool GetPokecenterPositions(float *nurseX, float *nurseZ, float *machineX, float *machineZ)
+{
+    for (int i = 0; i < OBJECT_EVENTS_COUNT; ++i)
+    {
+        if (gObjectEvents[i].active && gObjectEvents[i].graphicsId == OBJ_EVENT_GFX_NURSE)
+        {
+            float nx = (float)(gObjectEvents[i].currentCoords.x - MAP_OFFSET);
+            float nz = (float)(gObjectEvents[i].currentCoords.y - MAP_OFFSET);
+            if (VoxelWorld_InstanceCount() > 0)
+            {
+                const VoxelMapInstance *inst = VoxelWorld_Instance(0);
+                nx += (float)inst->originX;
+                nz += (float)inst->originY;
+            }
+            if (nurseX) *nurseX = nx;
+            if (nurseZ) *nurseZ = nz;
+            if (machineX) *machineX = nx - 1.0f;
+            if (machineZ) *machineZ = nz;
+            return true;
+        }
+    }
+    return false;
+}
+
 unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelCamera *camera,
                             VoxelBuilder *shadows, VoxelBuilder *reflections)
 {
@@ -735,6 +1028,8 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
     /* Towards the camera, along the ground. */
     float towardX = sinf(yawRad), towardZ = cosf(yawRad);
     float pixel = stretch / VOXEL_PIXELS_PER_TILE;
+    /* Forward camera bias prevents character occlusion by adjacent wall corners */
+    const float billboardBias = 0.25f;
     /* Static, not automatic: this runs in the VBlank handler. */
     static VoxelObjectCard objects[VOXEL_SPRITE_SLOTS];
     static VoxelEffectCard effects[VOXEL_EFFECTS_MAX];
@@ -906,21 +1201,27 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
 
         if (!card->drawn)
             continue;
-        /* Riding: up and down with what it rides, as the GBA bobs both. */
-        rise = card->rise > 0.0f ? card->rise - card->sprite->y2 * pixel : 0.0f;
+        /* Riding: up and down with what it rides, plus sprite y2 jump/hop elevation arc. */
+        rise = (card->rise > 0.0f ? card->rise : 0.0f) - card->sprite->y2 * pixel;
 #if CTR_VOXEL_LIGHTING
         /* Riding, it is off the ground: a shadow cast from its feet would be
          * left behind on the water. The GBA gives the surf mon none either. */
-        if (shadows != NULL && card->outdoor && card->rise <= 0.0f)
-            EmitCastShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ,
-                           stretch, card->shade);
+        if (shadows != NULL && card->rise <= 0.0f)
+        {
+            if (card->outdoor)
+                EmitCastShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ,
+                               stretch, card->shade);
+            else
+                EmitIndoorContactShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ);
+        }
 #endif
         if (reflections != NULL && gObjectEvents[i].hasReflection)
             EmitReflection(reflections, &sSlots[i], i, card->worldX, card->worldZ,
                            rightX, rightZ, stretch);
         unsigned first = builder->count;
         EmitBillboard(builder, &sSlots[i], i, card->worldX + 0.5f, card->worldZ + 0.5f,
-                      0.0f, 0.0f, rise, rightX, rightZ, stretch, card->shade);
+                      towardX * billboardBias, towardZ * billboardBias, rise,
+                      rightX, rightZ, stretch, card->shade);
         if (i == gPlayerAvatar.objectEventId && builder->count == first + 6)
             sPlayerVertexFirst = (int)first;
     }
@@ -965,7 +1266,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
         if (effect->owner >= 0)
         {
             const VoxelObjectCard *object = &objects[effect->owner];
-            float depth = effect->front ? VOXEL_EFFECT_DEPTH : -VOXEL_EFFECT_DEPTH;
+            float depth = (effect->front ? VOXEL_EFFECT_DEPTH : -VOXEL_EFFECT_DEPTH) + billboardBias;
             float along = (x - object->screenX) / VOXEL_PIXELS_PER_TILE;
             /* The owner's feet on the ground, lifted by what it rides. */
             float rise = object->rise + (object->feet - base - sprite->y2) * pixel;
@@ -1000,9 +1301,176 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
             cz = reference->worldZ + 0.5f + (base - reference->base) / VOXEL_PIXELS_PER_TILE;
             if (fabsf(cx - camera->targetX) > 24.0f || fabsf(cz - camera->targetZ) > 24.0f)
                 continue;
-            EmitBillboard(builder, &sSlots[effect->slot], effect->slot, cx, cz, 0.0f, 0.0f,
+            EmitBillboard(builder, &sSlots[effect->slot], effect->slot, cx, cz,
+                          towardX * billboardBias, towardZ * billboardBias,
                           -sprite->y2 * pixel, rightX, rightZ, stretch, reference->shade);
         }
     }
+
+    /* ── Door animation ─────────────────────────────────────────────────── */
+    {
+        int doorX = 0, doorY = 0, doorSize = 1;
+        const u8 *doorTiles = NULL;
+        const u8 *doorPalettes = NULL;
+        unsigned doorFrameOffset = 0;
+        int partnerX = -1, partnerY = -1;
+        static int sLastMapGroup = -1, sLastMapNum = -1;
+        static unsigned sLastDecodedOffset = 0xFFFFFFFF;
+        static const u8 *sLastDecodedTiles = NULL;
+        int curGroup = -1, curNum = -1;
+
+        VoxelWorld_GetLocation(&curGroup, &curNum);
+        if (curGroup != sLastMapGroup || curNum != sLastMapNum)
+        {
+            sLastMapGroup = curGroup;
+            sLastMapNum = curNum;
+            sDoorAnimState.active = false;
+            sLastDecodedOffset = 0xFFFFFFFF;
+            sLastDecodedTiles = NULL;
+            ResetCurrentDoorAnimationInfo();
+        }
+
+        bool doorRunning = GetCurrentDoorAnimationInfo(&doorX, &doorY, &doorSize,
+                                                       &doorTiles, &doorPalettes,
+                                                       &doorFrameOffset, &partnerX, &partnerY);
+        if (doorRunning)
+        {
+            sDoorAnimState.active = true;
+            sDoorAnimState.x = doorX;
+            sDoorAnimState.y = doorY;
+            sDoorAnimState.size = doorSize;
+            sDoorAnimState.tiles = doorTiles;
+            sDoorAnimState.paletteNums = doorPalettes;
+            sDoorAnimState.frameOffset = doorFrameOffset;
+            sDoorAnimState.partnerX = partnerX;
+            sDoorAnimState.partnerY = partnerY;
+            if (doorFrameOffset != sLastDecodedOffset || doorTiles != sLastDecodedTiles)
+            {
+                sLastDecodedOffset = doorFrameOffset;
+                sLastDecodedTiles = doorTiles;
+                DecodeDoorFrame(atlas, doorTiles, doorFrameOffset, doorSize, doorPalettes);
+                ++updates;
+            }
+        }
+        else
+        {
+            sDoorAnimState.active = false;
+            sLastDecodedOffset = 0xFFFFFFFF;
+            sLastDecodedTiles = NULL;
+        }
+
+        if (sDoorAnimState.active)
+        {
+            float px = 0.0f, pz = 0.0f;
+            VoxelEntities_GetPlayerWorldPos(&px, &pz);
+            float dx = fabsf(px - ((float)(sDoorAnimState.x - MAP_OFFSET) + 0.5f));
+            float dz = fabsf(pz - ((float)(sDoorAnimState.y - MAP_OFFSET) + 0.5f));
+            if (dx > 4.0f || dz > 4.0f)
+            {
+                sDoorAnimState.active = false;
+                sLastDecodedOffset = 0xFFFFFFFF;
+                sLastDecodedTiles = NULL;
+                ResetCurrentDoorAnimationInfo();
+            }
+            else
+            {
+                EmitDoorQuad(builder, sDoorAnimState.x, sDoorAnimState.y, sDoorAnimState.size);
+                if (sDoorAnimState.partnerX >= 0 && sDoorAnimState.partnerY >= 0)
+                    EmitDoorQuad(builder, sDoorAnimState.partnerX, sDoorAnimState.partnerY, sDoorAnimState.size);
+            }
+        }
+    }
+
+    /* ── Pokecenter healing animation ─────────────────────────────────────── */
+    {
+        float nurseX = 0.0f, nurseZ = 0.0f, machineX = 0.0f, machineZ = 0.0f;
+        bool hasNurse = false;
+        bool pokeballRefreshed = false;
+        bool monitorRefreshed = false;
+
+        for (unsigned id = 0; id < MAX_SPRITES; ++id)
+        {
+            const struct Sprite *sprite = &gSprites[id];
+            if (!sprite->inUse)
+                continue;
+
+            if (CtrSprite_IsPokeballGlow(sprite))
+            {
+                if (!hasNurse)
+                    hasNurse = GetPokecenterPositions(&nurseX, &nurseZ, &machineX, &machineZ);
+                if (hasNurse)
+                {
+                    if (!pokeballRefreshed)
+                    {
+                        if (RefreshSlot(VOXEL_HEAL_BALL_SLOT, sprite, atlas))
+                            ++updates;
+                        pokeballRefreshed = true;
+                    }
+
+                    int dx = (sprite->x + sprite->x2) - 93;
+                    int dy = (sprite->y + sprite->y2) - 36;
+                    int col = (dx >= 3) ? 1 : 0;
+                    int row = dy / 4;
+                    if (row < 0) row = 0;
+                    if (row > 2) row = 2;
+
+                    float bx = machineX + (col == 0 ? 0.36f : 0.64f);
+                    float bz = machineZ + (row == 0 ? 0.32f : (row == 1 ? 0.52f : 0.72f));
+                    float by = 0.71f;
+
+                    unsigned baseX = (VOXEL_HEAL_BALL_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+                    unsigned baseY = (VOXEL_HEAL_BALL_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+                    float u0 = (float)baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
+                    float u1 = (float)(baseX + 8) / (float)VOXEL_SPRITE_ATLAS_DIM;
+                    float v0 = 1.0f - (float)baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
+                    float v1 = 1.0f - (float)(baseY + 8) / (float)VOXEL_SPRITE_ATLAS_DIM;
+                    float halfW = 0.14f;
+
+                    VoxelBuilder_Quad(builder,
+                        &(VoxelVertex){bx - halfW, by, bz + halfW, u0, v1, 1.0f},
+                        &(VoxelVertex){bx + halfW, by, bz + halfW, u1, v1, 1.0f},
+                        &(VoxelVertex){bx + halfW, by, bz - halfW, u1, v0, 1.0f},
+                        &(VoxelVertex){bx - halfW, by, bz - halfW, u0, v0, 1.0f});
+                }
+            }
+            else if (CtrSprite_IsPokecenterMonitor(sprite))
+            {
+                if (!sprite->invisible)
+                {
+                    if (!hasNurse)
+                        hasNurse = GetPokecenterPositions(&nurseX, &nurseZ, &machineX, &machineZ);
+                    if (hasNurse)
+                    {
+                        if (!monitorRefreshed)
+                        {
+                            if (RefreshSlot(VOXEL_HEAL_MONITOR_SLOT, sprite, atlas))
+                                ++updates;
+                            monitorRefreshed = true;
+                        }
+
+                        float mx = nurseX + 0.5f;
+                        float mz = nurseZ - 0.5f;
+                        float my = 0.02f;
+
+                        unsigned baseX = (VOXEL_HEAL_MONITOR_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+                        unsigned baseY = (VOXEL_HEAL_MONITOR_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+                        float u0 = (float)baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
+                        float u1 = (float)(baseX + 16) / (float)VOXEL_SPRITE_ATLAS_DIM;
+                        float v0 = 1.0f - (float)baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
+                        float v1 = 1.0f - (float)(baseY + 16) / (float)VOXEL_SPRITE_ATLAS_DIM;
+                        float halfW = 0.5f;
+                        float halfH = 0.5f;
+
+                        VoxelBuilder_Quad(builder,
+                            &(VoxelVertex){mx - halfW, my, mz + halfH, u0, v1, 1.0f},
+                            &(VoxelVertex){mx + halfW, my, mz + halfH, u1, v1, 1.0f},
+                            &(VoxelVertex){mx + halfW, my, mz - halfH, u1, v0, 1.0f},
+                            &(VoxelVertex){mx - halfW, my, mz - halfH, u0, v0, 1.0f});
+                    }
+                }
+            }
+        }
+    }
+
     return updates;
 }

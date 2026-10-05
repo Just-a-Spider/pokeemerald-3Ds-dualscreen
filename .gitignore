@@ -41,3 +41,8 @@ __pycache__/
 .agents/
 session-*.md
 .public-denylist
+
+# Intermediate art & icons
+/assets/
+extracted_icon.png
+

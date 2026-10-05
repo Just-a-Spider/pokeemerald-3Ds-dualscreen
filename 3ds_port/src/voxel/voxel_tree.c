@@ -2,6 +2,12 @@
 #include "voxel_tree.h"
 #include "voxel_relief.h"
 
+#ifdef VOXEL_HOST_FILES
+static inline int CtrVoxel_GetCameraQuadrant(void) { return 0; }
+#else
+int CtrVoxel_GetCameraQuadrant(void);
+#endif
+
 int VoxelTree_Part(int metatileId)
 {
     switch (metatileId)
@@ -39,25 +45,53 @@ int VoxelTree_GroundMetatile(int metatileId)
     }
 }
 
-/* The small crown is 16:32: width 1, length 2 tiles, at the same 50 degrees
- * and sunk the same way as the large one, standing on its one-cell trunk. */
+/* The small crown is 16:32: width 1, length 2 tiles, at 50 degrees
+ * facing the active camera quadrant, standing on its one-cell trunk. */
 static void EmitSmallCell(VoxelBuilder *builder, int x, int y)
 {
     float wx = (float)x, wz = (float)y;
     const float rise = 1.532089f, run = 1.285575f;
     const float baseHeight = -0.10f;
-    /* 0.15 further forward than half the large tree's: any less and the
-     * leaves stand through the ground behind the trunk. */
     float baseZ = wz + 0.825f;
+    float baseX = wx + 0.825f;
+    int q = CtrVoxel_GetCameraQuadrant();
 
     VoxelMesh_Top(builder, wx, wz, 0.0f, 0.0f,
                   48.0f / VOXEL_TREE_TEXTURE_DIM, 0.5f, 1.0f, 0.25f, 1.0f);
     builder->rounded = true;
-    VoxelBuilder_Quad(builder,
-        &(VoxelVertex){wx,        baseHeight + rise, baseZ - run, 0.5f,  0.5f, 1.0f},
-        &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - run, 0.75f, 0.5f, 1.0f},
-        &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ,       0.75f, 0.0f, 1.0f},
-        &(VoxelVertex){wx,        baseHeight,        baseZ,       0.5f,  0.0f, 1.0f});
+
+    if (q == 1) /* East camera looking West */
+    {
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){baseX - run, baseHeight + rise, wz + 1.0f, 0.5f,  0.5f, 1.0f},
+            &(VoxelVertex){baseX - run, baseHeight + rise, wz,        0.75f, 0.5f, 1.0f},
+            &(VoxelVertex){baseX,       baseHeight,        wz,        0.75f, 0.0f, 1.0f},
+            &(VoxelVertex){baseX,       baseHeight,        wz + 1.0f, 0.5f,  0.0f, 1.0f});
+    }
+    else if (q == 2) /* North camera looking South */
+    {
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - 0.65f + run, 0.5f,  0.5f, 1.0f},
+            &(VoxelVertex){wx,        baseHeight + rise, baseZ - 0.65f + run, 0.75f, 0.5f, 1.0f},
+            &(VoxelVertex){wx,        baseHeight,        baseZ - 0.65f,       0.75f, 0.0f, 1.0f},
+            &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ - 0.65f,       0.5f,  0.0f, 1.0f});
+    }
+    else if (q == 3) /* West camera looking East */
+    {
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){baseX - 0.65f + run, baseHeight + rise, wz,        0.5f,  0.5f, 1.0f},
+            &(VoxelVertex){baseX - 0.65f + run, baseHeight + rise, wz + 1.0f, 0.75f, 0.5f, 1.0f},
+            &(VoxelVertex){baseX - 0.65f,       baseHeight,        wz + 1.0f, 0.75f, 0.0f, 1.0f},
+            &(VoxelVertex){baseX - 0.65f,       baseHeight,        wz,        0.5f,  0.0f, 1.0f});
+    }
+    else /* q == 0: Default South camera looking North */
+    {
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){wx,        baseHeight + rise, baseZ - run, 0.5f,  0.5f, 1.0f},
+            &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - run, 0.75f, 0.5f, 1.0f},
+            &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ,       0.75f, 0.0f, 1.0f},
+            &(VoxelVertex){wx,        baseHeight,        baseZ,       0.5f,  0.0f, 1.0f});
+    }
     builder->rounded = false;
 }
 
@@ -69,14 +103,10 @@ static void EmitCell(VoxelBuilder *builder, int x, int y, int part)
     float u1 = u0 + 16.0f / VOXEL_TREE_TEXTURE_DIM;
     float v0 = 1.0f - row * 16.0f / VOXEL_TREE_TEXTURE_DIM;
     float v1 = v0 - 16.0f / VOXEL_TREE_TEXTURE_DIM;
-    /* The crown keeps its 32:36 aspect ratio: width 2, length 2.25 tiles.
-     * sin/cos(50 degrees), fixed in the world rather than camera billboarding.
-     * Lower the transparent bottom margin into the ground so the visible
-     * leaves overlap the trunk instead of exposing a horizontal cut. */
     const float rise = 1.723600f, run = 1.446272f;
     const float baseHeight = -0.10f;
-    float baseZ = wz - row + 1.35f;
     float top = 1.0f - row * 0.5f, bottom = top - 0.5f;
+    int q = CtrVoxel_GetCameraQuadrant();
 
     if (part == VOXEL_TREE_SMALL)
     {
@@ -89,13 +119,55 @@ static void EmitCell(VoxelBuilder *builder, int x, int y, int part)
     u1 = u0 + 16.0f / VOXEL_TREE_TEXTURE_DIM;
     v0 = 1.0f - row * 18.0f / VOXEL_TREE_TEXTURE_DIM;
     v1 = v0 - 18.0f / VOXEL_TREE_TEXTURE_DIM;
-    /* A crown card: lit as the rounded crown it stands for. */
     builder->rounded = true;
-    VoxelBuilder_Quad(builder,
-        &(VoxelVertex){wx,        baseHeight + top * rise,    baseZ - top * run,    u0, v0, 1.0f},
-        &(VoxelVertex){wx + 1.0f, baseHeight + top * rise,    baseZ - top * run,    u1, v0, 1.0f},
-        &(VoxelVertex){wx + 1.0f, baseHeight + bottom * rise, baseZ - bottom * run, u1, v1, 1.0f},
-        &(VoxelVertex){wx,        baseHeight + bottom * rise, baseZ - bottom * run, u0, v1, 1.0f});
+
+    float treeX = wx - (float)col;
+    float treeZ = wz - (float)row;
+
+    if (q == 1) /* East camera looking West */
+    {
+        float baseX = treeX + 1.35f;
+        float z0 = treeZ + 1.0f - (float)col;
+        float z1 = z0 + 1.0f;
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){baseX - top * run,    baseHeight + top * rise,    z1, u0, v0, 1.0f},
+            &(VoxelVertex){baseX - top * run,    baseHeight + top * rise,    z0, u1, v0, 1.0f},
+            &(VoxelVertex){baseX - bottom * run, baseHeight + bottom * rise, z0, u1, v1, 1.0f},
+            &(VoxelVertex){baseX - bottom * run, baseHeight + bottom * rise, z1, u0, v1, 1.0f});
+    }
+    else if (q == 2) /* North camera looking South */
+    {
+        float baseZ = treeZ + 0.65f;
+        float x0 = treeX + 1.0f - (float)col;
+        float x1 = x0 + 1.0f;
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){x1, baseHeight + top * rise,    baseZ + top * run,    u0, v0, 1.0f},
+            &(VoxelVertex){x0, baseHeight + top * rise,    baseZ + top * run,    u1, v0, 1.0f},
+            &(VoxelVertex){x0, baseHeight + bottom * rise, baseZ + bottom * run, u1, v1, 1.0f},
+            &(VoxelVertex){x1, baseHeight + bottom * rise, baseZ + bottom * run, u0, v1, 1.0f});
+    }
+    else if (q == 3) /* West camera looking East */
+    {
+        float baseX = treeX + 0.65f;
+        float z0 = treeZ + (float)col;
+        float z1 = z0 + 1.0f;
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){baseX + top * run,    baseHeight + top * rise,    z0, u0, v0, 1.0f},
+            &(VoxelVertex){baseX + top * run,    baseHeight + top * rise,    z1, u1, v0, 1.0f},
+            &(VoxelVertex){baseX + bottom * run, baseHeight + bottom * rise, z1, u1, v1, 1.0f},
+            &(VoxelVertex){baseX + bottom * run, baseHeight + bottom * rise, z0, u0, v1, 1.0f});
+    }
+    else /* q == 0: Default South camera looking North */
+    {
+        float baseZ = treeZ + 1.35f;
+        float x0 = wx;
+        float x1 = wx + 1.0f;
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){x0, baseHeight + top * rise,    baseZ - top * run,    u0, v0, 1.0f},
+            &(VoxelVertex){x1, baseHeight + top * rise,    baseZ - top * run,    u1, v0, 1.0f},
+            &(VoxelVertex){x1, baseHeight + bottom * rise, baseZ - bottom * run, u1, v1, 1.0f},
+            &(VoxelVertex){x0, baseHeight + bottom * rise, baseZ - bottom * run, u0, v1, 1.0f});
+    }
     builder->rounded = false;
 }
 

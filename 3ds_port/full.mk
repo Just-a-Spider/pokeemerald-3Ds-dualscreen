@@ -373,12 +373,14 @@ romfs/voxel/relief.bin: scripts/gen_voxel_relief.py scripts/voxel_cells.py scrip
 		$(ROOT)/data/layouts/layouts.json
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_voxel_relief.py --output $@
+endif
 
 romfs/stage/leaves.bin: scripts/gen_intro_margins.py $(ROOT)/graphics/intro/scene_1/bg.4bpp \
 		$(wildcard $(ROOT)/graphics/intro/scene_1/bg?_map.bin)
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_intro_margins.py --output $@
 
+ifeq ($(VOXEL),1)
 HOST_VOXEL_DEFS := -D'PORT_LOG(...)=((void)0)' -DVOXEL_HOST_FILES
 
 .PHONY: verify-voxel-trees

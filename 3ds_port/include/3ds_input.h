@@ -39,5 +39,6 @@ typedef struct {
 void CtrInput_Update(CtrInput *state, const CtrInputSample *sample);
 void CtrInput_Scan(void);
 void CtrInput_Clear(void);
+void CtrInput_Mask(uint16_t mask);
 const CtrInput *CtrInput_Get(void);
 #endif

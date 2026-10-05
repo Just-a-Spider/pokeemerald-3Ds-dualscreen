@@ -9,6 +9,12 @@ void CtrInput_Clear(void)
     memset(&sInput, 0, sizeof(sInput));
 }
 
+void CtrInput_Mask(uint16_t mask)
+{
+    sInput.held &= ~mask;
+    sInput.down &= ~mask;
+}
+
 void CtrInput_Scan(void)
 {
     static const uint32_t keys[] =

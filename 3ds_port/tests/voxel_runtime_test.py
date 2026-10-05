@@ -35,7 +35,7 @@ def main():
 #define GPU_NEAREST 0
 #define GPU_CLAMP_TO_EDGE 0
 enum { NEED_HOLE, NEED_STALE, NEED_AHEAD, NEED_AHEAD_STALE };
-typedef struct { int mapGroup, mapNum, originX, originY, width, height; const void *primaryTileset, *secondaryTileset; } VoxelMapInstance;
+typedef struct { int mapGroup, mapNum, originX, originY, width, height; const void *primaryTileset, *secondaryTileset; bool indoor; } VoxelMapInstance;
 typedef struct { VoxelMapInstance *inst; int cx, cy, x0, y0, x1, y1; bool border; } ChunkSite;
 typedef struct { void *data; } C3D_Tex;
 typedef struct { bool valid; const void *primaryTileset, *secondaryTileset;

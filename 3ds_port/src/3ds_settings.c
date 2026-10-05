@@ -23,19 +23,22 @@ static bool sVoxel = false;
  * renderer builds what the camera actually sees at any of them (its frustum,
  * ctr_voxel.c); further out or flatter would only cost more chunks per frame.
  */
-static const int sPitches[] = {34, 37, 40, 43, 46};
+static const int sPitches[] = {28, 32, 36, 40, 44};
 static const int sZooms[] = {90, 100, 110, 120};
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
-static int sPitch = 2, sZoom = 1;
-/* The HD-2D tilt-shift blur over the voxel picture (3ds_video.c): on unless
- * turned off. */
+static int sPitch = 1, sZoom = 1;
+/* The HD-2D tilt-shift blur over the voxel picture (3ds_video.c): on unless turned off. */
 static bool sVoxelBlur = true;
 /* Battles in front of the voxel world rather than the GBA's scenery
  * (3ds_video.c, RenderBattleWorld): off unless turned on. */
 static bool sVoxelBattle = false;
-/* The FPS counter in the top screen's corner (3ds_video.c): off unless
- * turned on. */
+/* Stereoscopic 3D mode for voxel engine (off by default on Old 3DS for 60fps performance). */
+static bool sVoxelStereo = false;
+/* The FPS counter in the top screen's corner (3ds_video.c): off unless turned on. */
 static bool sShowFps = false;
+static bool sDayNight = true;
+static float sDuskStart = 17.0f;
+static float sNightStart = 20.0f;
 
 static int Find(const int *values, int count, int value, int fallback)
 {
@@ -58,6 +61,7 @@ void CtrSettings_Load(void)
     while (fgets(line, sizeof(line), file))
     {
         int value;
+        float fval;
 
         if (strncmp(line, "voxel=", 6) == 0)
             sVoxel = line[6] == '1';
@@ -66,16 +70,28 @@ void CtrSettings_Load(void)
         else if (sscanf(line, "voxel_zoom=%d", &value) == 1)
             sZoom = Find(sZooms, COUNT(sZooms), value, sZoom);
         else if (strncmp(line, "voxel_blur=", 11) == 0)
-            sVoxelBlur = line[11] != '0';
+            sVoxelBlur = line[11] == '1';
         else if (strncmp(line, "voxel_battle=", 13) == 0)
             sVoxelBattle = line[13] == '1';
+        else if (strncmp(line, "voxel_stereo=", 13) == 0)
+            sVoxelStereo = line[13] == '1';
+        else if (strncmp(line, "voxel_3d=", 9) == 0)
+            sVoxelStereo = line[9] == '1';
         else if (strncmp(line, "fps=", 4) == 0)
             sShowFps = line[4] == '1';
+        else if (strncmp(line, "daynight=", 9) == 0)
+            sDayNight = line[9] == '1';
+        else if (sscanf(line, "time_offset=%f", &fval) == 1)
+            CtrPlatform_SetTimeOffset((int)(fval * 3600.0f));
+        else if (sscanf(line, "dusk_start=%f", &fval) == 1)
+            sDuskStart = fval;
+        else if (sscanf(line, "night_start=%f", &fval) == 1)
+            sNightStart = fval;
     }
     fclose(file);
-    CtrLog_Write(CTR_LOG_FS, "settings: voxel=%d pitch=%d zoom=%d blur=%d battle=%d fps=%d",
+    CtrLog_Write(CTR_LOG_FS, "settings: voxel=%d pitch=%d zoom=%d blur=%d battle=%d fps=%d daynight=%d",
                  sVoxel ? 1 : 0, sPitches[sPitch], sZooms[sZoom], sVoxelBlur ? 1 : 0,
-                 sVoxelBattle ? 1 : 0, sShowFps ? 1 : 0);
+                 sVoxelBattle ? 1 : 0, sShowFps ? 1 : 0, sDayNight ? 1 : 0);
 }
 
 /*
@@ -88,7 +104,7 @@ void CtrSettings_Load(void)
 static Thread sSaver;
 static LightEvent sSaveWake;
 static LightLock sSaveLock = 1;
-static char sSaveText[160];
+static char sSaveText[256];
 static bool sSavePending, sSaveQuit;
 
 static void WriteText(const char *text)
@@ -139,9 +155,11 @@ static void Save(void)
         return;
 
     snprintf(text, sizeof(text),
-             "voxel=%d\nvoxel_pitch=%d\nvoxel_zoom=%d\nvoxel_blur=%d\nvoxel_battle=%d\nfps=%d\n",
+             "voxel=%d\nvoxel_pitch=%d\nvoxel_zoom=%d\nvoxel_blur=%d\nvoxel_battle=%d\nvoxel_stereo=%d\nfps=%d\ndaynight=%d\ntime_offset=%.2f\ndusk_start=%.1f\nnight_start=%.1f\n",
              sVoxel ? 1 : 0, sPitches[sPitch], sZooms[sZoom], sVoxelBlur ? 1 : 0, sVoxelBattle ? 1 : 0,
-             sShowFps ? 1 : 0);
+             sVoxelStereo ? 1 : 0,
+             sShowFps ? 1 : 0, sDayNight ? 1 : 0,
+             (float)CtrPlatform_GetTimeOffset() / 3600.0f, sDuskStart, sNightStart);
     if (sSaver == NULL)
     {
         s32 priority = 0x30;
@@ -243,6 +261,20 @@ void CtrSettings_SetVoxelBattle(bool on)
     Save();
 }
 
+bool CtrSettings_VoxelStereo(void)
+{
+    return sVoxelStereo;
+}
+
+void CtrSettings_SetVoxelStereo(bool on)
+{
+    if (sVoxelStereo == on)
+        return;
+    sVoxelStereo = on;
+    Save();
+    CtrLog_Write(CTR_LOG_FS, "settings: voxel_stereo=%d", on ? 1 : 0);
+}
+
 bool CtrSettings_ShowFps(void)
 {
     return sShowFps;
@@ -254,4 +286,28 @@ void CtrSettings_SetShowFps(bool on)
         return;
     sShowFps = on;
     Save();
+}
+
+bool CtrSettings_DayNight(void)
+{
+    return sDayNight;
+}
+
+void CtrSettings_SetDayNight(bool on)
+{
+    if (sDayNight == on)
+        return;
+    sDayNight = on;
+    Save();
+    CtrLog_Write(CTR_LOG_FS, "settings: daynight=%d", on ? 1 : 0);
+}
+
+float CtrSettings_DuskStart(void)
+{
+    return sDuskStart;
+}
+
+float CtrSettings_NightStart(void)
+{
+    return sNightStart;
 }

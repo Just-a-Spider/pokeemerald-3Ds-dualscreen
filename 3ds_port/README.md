@@ -7,13 +7,13 @@ decompilation it compiles.
 | Path | What |
 |---|---|
 | `src/main_3ds.c`, `3ds_platform.c` | process, heaps, frame pacing, lifecycle |
-| `src/3ds_video.c`, `3ds_video_decode.c` | GPU compositor: GBA registers/VRAM/OAM to Citro3D |
+| `src/3ds_video.c`, `src/compositor/` | GPU compositor: battle layers, presentation, GBA composition |
 | `src/3ds_audio.c` | mixer frames to NDSP |
 | `src/3ds_input*.c` | buttons, Circle Pad, touch |
 | `src/3ds_data.c`, `3ds_pak.c` | game data backends (romfs, loose, pack) |
 | `src/3ds_assets.c`, `3ds_map_loader.c`, `3ds_script_loader.c` | INCBIN stubs, map payloads, bundled regions |
 | `src/3ds_compat.c`, `3ds_game_full.c`, `3ds_game_bridge.c` | the bridge: saves, fonts, entry into `AgbMain` |
-| `src/3ds_bottom_ui.c`, `3ds_bottom_screen.c` | bottom-screen interface |
+| `src/3ds_bottom_ui.c`, `src/bottom_ui/`, `3ds_bottom_screen.c` | bottom-screen interface (draw, screens, state, touch) |
 | `src/voxel/` | voxel overworld |
 | `compat/` | headers game translation units see (`port_platform.h`, staging modes) |
 | `scripts/` | build-time generators and checks (bundles, voxel data) |
