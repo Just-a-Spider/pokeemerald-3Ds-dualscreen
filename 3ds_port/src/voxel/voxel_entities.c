@@ -13,16 +13,12 @@
 #include "event_object_movement.h"
 #include "field_player_avatar.h"
 #include "constants/field_effects.h"
-#include "constants/event_objects.h"
+#include "constants/event_object_movement.h"
 #include "gba/io_reg.h"
 #include "port_platform.h"
-#include "field_door.h"
-#include "field_effect.h"
-#include "field_weather.h"
-#include "constants/weather.h"
 
 #include "3ds_video.h"
-#include "3ds_platform.h"
+#include "voxel_building.h"
 #include "voxel_entities.h"
 #include "voxel_grade.h"
 #include "voxel_relief.h"
@@ -105,20 +101,52 @@ static void GetSpriteDimensions(u8 shape, u8 size, int *w, int *h)
 
 /* ── Movement interpolation ─────────────────────────────────────────────── */
 
-static bool IsJumpMovement(u8 actionId)
-{
-    return (actionId >= MOVEMENT_ACTION_JUMP_2_DOWN && actionId <= MOVEMENT_ACTION_JUMP_2_RIGHT)
-        || (actionId >= MOVEMENT_ACTION_JUMP_SPECIAL_DOWN && actionId <= MOVEMENT_ACTION_JUMP_SPECIAL_RIGHT)
-        || (actionId >= MOVEMENT_ACTION_JUMP_DOWN && actionId <= MOVEMENT_ACTION_JUMP_IN_PLACE_RIGHT_LEFT)
-        || (actionId >= MOVEMENT_ACTION_ACRO_WHEELIE_JUMP_DOWN && actionId <= MOVEMENT_ACTION_ACRO_WHEELIE_JUMP_RIGHT);
-}
-
 /*
  * Sub-tile progress in [0,1]: 0 at previousCoords, 1 at currentCoords.
  *
  * sprite->x/y are screen-space and already carry the camera offset, so they
  * cannot be used for a world position. The step timer can.
  */
+/*
+ * A jump keeps other things in the sprite data a step keeps its speed and
+ * timer in (event_object_movement.c: sDistance, sJumpType, and the timer in
+ * data[6]). Read as a step, a ledge's jump stood still at 0 and the jumper
+ * went from tile to tile as the coordinates did: at the start, half way and
+ * on landing.
+ */
+static bool IsJumpAction(u8 action)
+{
+    return (action >= MOVEMENT_ACTION_JUMP_2_DOWN && action <= MOVEMENT_ACTION_JUMP_2_RIGHT)
+        || (action >= MOVEMENT_ACTION_JUMP_SPECIAL_DOWN && action <= MOVEMENT_ACTION_JUMP_SPECIAL_RIGHT)
+        || (action >= MOVEMENT_ACTION_JUMP_DOWN && action <= MOVEMENT_ACTION_JUMP_IN_PLACE_RIGHT_LEFT)
+        || (action >= MOVEMENT_ACTION_ACRO_WHEELIE_HOP_FACE_DOWN
+         && action <= MOVEMENT_ACTION_ACRO_WHEELIE_JUMP_RIGHT);
+}
+
+/* In the air: the action has set the jump up (sActionFuncId) and not landed. */
+static bool IsJumping(const struct ObjectEvent *obj, const struct Sprite *sprite)
+{
+    return (obj->singleMovementActive || obj->heldMovementActive)
+        && IsJumpAction(obj->movementActionId) && sprite->data[2] == 1;
+}
+
+/*
+ * A jump moves a pixel a frame, a special one a pixel every other frame, and
+ * one of two tiles moves its coordinates on by the second tile half way
+ * (UpdateJumpAnim): past 16 pixels it is that far into the second tile.
+ */
+static float GetJumpProgress(const struct ObjectEvent *obj, const struct Sprite *sprite)
+{
+    float pixels = (float)(u16)sprite->data[6];
+
+    if (obj->movementActionId >= MOVEMENT_ACTION_JUMP_SPECIAL_DOWN
+     && obj->movementActionId <= MOVEMENT_ACTION_JUMP_SPECIAL_RIGHT)
+        pixels *= 0.5f;
+    if (pixels >= VOXEL_PIXELS_PER_TILE)
+        pixels -= VOXEL_PIXELS_PER_TILE;
+    return pixels < VOXEL_PIXELS_PER_TILE ? pixels / VOXEL_PIXELS_PER_TILE : 1.0f;
+}
+
 static float GetMovementProgress(const struct ObjectEvent *obj, const struct Sprite *sprite)
 {
     int speed, timer, stepLen;
@@ -127,33 +155,8 @@ static float GetMovementProgress(const struct ObjectEvent *obj, const struct Spr
     /* Idle: ShiftStillObjectEventCoords has made previous == current. */
     if (!obj->singleMovementActive && !obj->heldMovementActive)
         return 1.0f;
-
-    /* Ledge jumps and hop animations use data[6] as step timer */
-    if (IsJumpMovement(obj->movementActionId))
-    {
-        int timer = (int)(u16)sprite->data[6];
-        int distance = (int)(u16)sprite->data[4];
-        int halfLen = (obj->movementActionId >= MOVEMENT_ACTION_JUMP_SPECIAL_DOWN &&
-                       obj->movementActionId <= MOVEMENT_ACTION_JUMP_SPECIAL_RIGHT) ? 32 : 16;
-        if (distance == 2 /* JUMP_DISTANCE_FAR */)
-            t = (float)(timer % halfLen) / (float)halfLen;
-        else
-            t = (float)timer / (float)halfLen;
-
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-        return t;
-    }
-
-    /* Slow walk actions (data[4] is timer, 32 frames) */
-    if (obj->movementActionId >= 0x18 && obj->movementActionId <= 0x23)
-    {
-        timer = (int)(u16)sprite->data[4];
-        t = (float)timer / 32.0f;
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-        return t;
-    }
+    if (IsJumpAction(obj->movementActionId))
+        return IsJumping(obj, sprite) ? GetJumpProgress(obj, sprite) : 1.0f;
 
     speed = (int)(u16)sprite->data[4];
     timer = (int)(u16)sprite->data[5];
@@ -241,50 +244,72 @@ static u32 GatherSource(const struct Sprite *sprite, int w, int h, bool color256
     return written;
 }
 
-/* Writes the gathered tiles into the slot's 64x64 cell of the atlas. */
+/* The atlas texel of the 8x8 block (bx, by), a block of 64 in Morton order. */
+static uint16_t *AtlasBlock(uint16_t *atlas, unsigned bx, unsigned by)
+{
+    return atlas + (by * (VOXEL_SPRITE_ATLAS_DIM / 8) + bx) * 64u;
+}
+
+/*
+ * Writes the gathered tiles into the slot's 64x64 cell of the atlas. A
+ * sprite's tiles are whole 8x8 blocks of the atlas, flipped or not, so each
+ * goes to one block; the colours are graded once each into a table, not per
+ * pixel out of the 64 KiB grading table (a cache miss a pixel on an ARM11).
+ * The same texels as a pixel at a time through CtrVideo_Texel.
+ */
 static void DecodeSlot(VoxelSpriteSlot *slot, unsigned index, uint16_t *atlas)
 {
+    static uint8_t morton[64];
+    static bool mortonReady;
     unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-    unsigned bytesPerTile = slot->color256 ? 64u : 32u;
-    int tilesX = slot->width / 8;
+    unsigned bytesPerTile = slot->color256 ? 64u : 32u, colours = slot->color256 ? 256u : 16u;
+    int tilesX = slot->width / 8, tilesY = slot->height / 8;
     /* Clearing only what was drawn before, union the new extent, keeps a
      * walking sprite's per-frame cost at its own size rather than 64x64. */
     int clearW = slot->drawnWidth > slot->width ? slot->drawnWidth : slot->width;
     int clearH = slot->drawnHeight > slot->height ? slot->drawnHeight : slot->height;
+    uint16_t graded[256];
 
-    for (int y = 0; y < clearH; ++y)
-        for (int x = 0; x < clearW; ++x)
-            atlas[CtrVideo_Texel(baseX + (unsigned)x, baseY + (unsigned)y,
-                                 VOXEL_SPRITE_ATLAS_DIM)] = 0;
+    if (!mortonReady)
+    {
+        for (unsigned i = 0; i < 64; ++i)
+            morton[i] = (uint8_t)CtrVideo_Texel(i & 7, i / 8, 8);
+        mortonReady = true;
+    }
+    for (int by = 0; by < (clearH + 7) / 8; ++by)
+        for (int bx = 0; bx < (clearW + 7) / 8; ++bx)
+            memset(AtlasBlock(atlas, baseX / 8 + (unsigned)bx, baseY / 8 + (unsigned)by), 0,
+                   64 * sizeof(uint16_t));
     slot->drawnWidth = slot->width;
     slot->drawnHeight = slot->height;
+    for (unsigned c = 1; c < colours; ++c)
+        graded[c] = VoxelGrade_RGBA5551(slot->palette[c]);
 
-    for (int ty = 0; ty < slot->height / 8; ++ty)
+    for (int ty = 0; ty < tilesY; ++ty)
     {
         for (int tx = 0; tx < tilesX; ++tx)
         {
             const u8 *tile = slot->source + (unsigned)(ty * tilesX + tx) * bytesPerTile;
+            unsigned ox = (unsigned)(slot->flipX ? tilesX - 1 - tx : tx);
+            unsigned oy = (unsigned)(slot->flipY ? tilesY - 1 - ty : ty);
+            uint16_t *block = AtlasBlock(atlas, baseX / 8 + ox, baseY / 8 + oy);
+            unsigned flipX = slot->flipX ? 7u : 0u, flipY = slot->flipY ? 7u : 0u;
 
             for (unsigned py = 0; py < 8; ++py)
             {
+                const uint8_t *row = morton + ((py ^ flipY) * 8);
+
                 for (unsigned px = 0; px < 8; ++px)
                 {
                     unsigned index8 = py * 8 + px;
                     unsigned colorIdx = slot->color256
                         ? tile[index8]
                         : ((tile[index8 / 2] >> ((px & 1) * 4)) & 0xF);
-                    int outX = tx * 8 + (int)px;
-                    int outY = ty * 8 + (int)py;
 
                     /* Colour index 0 is transparent; the alpha bit carries it. */
-                    if (colorIdx == 0)
-                        continue;
-                    if (slot->flipX) outX = slot->width - 1 - outX;
-                    if (slot->flipY) outY = slot->height - 1 - outY;
-                    atlas[CtrVideo_Texel(baseX + (unsigned)outX, baseY + (unsigned)outY,
-                                         VOXEL_SPRITE_ATLAS_DIM)] =
-                        VoxelGrade_RGBA5551(slot->palette[colorIdx]);
+                    if (colorIdx != 0)
+                        block[row[px ^ flipX]] = graded[colorIdx];
                 }
             }
         }
@@ -469,6 +494,48 @@ static float CardPush(float cx, float cz, float halfW, float height)
 }
 
 /*
+ * Furniture against a room's back wall is modelled from its drawing, and the
+ * drawing comes forward of the wall: half a cell, to the middle of the cell
+ * before it, where a walker's card stands - or further, a Pokemon Center's
+ * PC two pixels past it. Card and model front then share a depth, or the
+ * card is behind, and the model, drawn first, hid the walker in front of it.
+ * The card comes along the line of sight to a pixel in front of the model's
+ * face there, as on the GBA. Under either edge of the card, not only its
+ * middle: walking along the furniture, half the card is over a model's cell
+ * before its middle is, and beside a machine a sliver of it is.
+ */
+#define VOXEL_MODEL_PUSH_MAX 0.5f      /* further than that is not furniture's front */
+#define VOXEL_MODEL_PUSH_HEIGHT 0.25f  /* where on the card the face is looked for */
+
+static float ModelPush(float cx, float cz, float halfW)
+{
+    int y = (int)floorf(cz);
+    float left = cx - halfW + VOXEL_CARD_CLEAR, right = cx + halfW - VOXEL_CARD_CLEAR;
+    int x0 = (int)floorf(left), x1 = (int)floorf(right);
+    float push = 0.0f;
+
+    for (int x = x0; x <= x1; ++x)
+    {
+        const VoxelMapInstance *inst = VoxelWorld_GetInstanceAt(x, y);
+        float front, need = 0.0f;
+
+        if (inst == NULL)
+            continue;
+        /* A model's face in the cell, whether or not the cell is the
+         * model's: the PC's foot is drawn on the floor the walker uses it
+         * from, in a cell that is the counter's. */
+        if (VoxelBuildings_FrontAt(inst, x, y, left, right, VOXEL_MODEL_PUSH_HEIGHT, &front)
+         && front + VOXEL_CARD_CLEAR > cz && front - cz + VOXEL_CARD_CLEAR <= VOXEL_MODEL_PUSH_MAX)
+            need = front - cz + VOXEL_CARD_CLEAR;
+        else if (VoxelBuildings_CellAt(inst, x, y, NULL, NULL))
+            need = VOXEL_CARD_CLEAR;
+        if (need > push)
+            push = need;
+    }
+    return push;
+}
+
+/*
  * A card standing on the ground at (cx, cz), moved (offX, offZ) from there
  * and raised by `rise`: an object stands on the centre of its tile, feet on
  * the ground; a field effect that belongs to an object is drawn in that
@@ -492,6 +559,10 @@ static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, un
      * the lattice between cells, so a flight of stairs is climbed. */
     float lift = VoxelRelief_LiftAt(cx, cz) + rise, shift = VoxelRelief_ShiftAt(cx, cz);
     float push = CardPush(cx, cz, halfW, height);
+    float model = ModelPush(cx, cz, halfW);
+
+    if (model > push)
+        push = model;
     /* Towards the camera: the right vector turned a quarter, unit length. */
     float along = push > 0.0f ? push / sqrtf(rightX * rightX + rightZ * rightZ) : 0.0f;
     float px = cx + offX - rightZ * along, pz = cz + offZ + shift + rightX * along;
@@ -515,7 +586,7 @@ static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, un
 #define VOXEL_DECAL_LIFT 0.025f   /* over the ground, under cast shadows (0.03) */
 
 static void EmitDecal(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsigned index,
-                      float cx, float cz, float shade)
+                      float cx, float cz, float lift, float shade)
 {
     unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
@@ -525,7 +596,7 @@ static void EmitDecal(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsign
     float v1 = 1.0f - (baseY + slot->height) / (float)VOXEL_SPRITE_ATLAS_DIM;
     float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
     float halfH = slot->height / VOXEL_PIXELS_PER_TILE * 0.5f;
-    float y = VoxelRelief_LiftAt(cx, cz) + VOXEL_DECAL_LIFT;
+    float y = VoxelRelief_LiftAt(cx, cz) + VOXEL_DECAL_LIFT + lift;
     float z = cz + VoxelRelief_ShiftAt(cx, cz);
 
     VoxelBuilder_Quad(builder,
@@ -533,6 +604,131 @@ static void EmitDecal(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsign
         &(VoxelVertex){cx + halfW, y, z + halfH, u1, v1, shade},
         &(VoxelVertex){cx + halfW, y, z - halfH, u1, v0, shade},
         &(VoxelVertex){cx - halfW, y, z - halfH, u0, v0, shade});
+}
+
+/*
+ * A door standing open. The game draws its frames on the tilemap, which this
+ * view does not show: the walker went through a door that stayed shut, card
+ * and all. Here the doorway is a black opening that widens as the door does -
+ * on the wall the door is drawn on, or lying on the door's own cell where the
+ * building is not modelled and its drawing lies flat - and whoever steps
+ * through it is gone into the dark, as on the GBA they are behind the wall.
+ */
+bool8 PortDoor_Get(s16 *x, s16 *y, u8 *width, u8 *level);   /* field_door.c */
+
+#define VOXEL_DOOR_DEPTH 0.03f    /* the opening, in front of its wall */
+#define VOXEL_DOOR_HEIGHT 1.25f   /* the door's own metatile and the 4 pixels drawn over it */
+#define VOXEL_DOOR_DUSK 0.5f      /* tiles before it over which a walker darkens */
+#define VOXEL_DOOR_DARK 0.35f
+
+typedef struct
+{
+    bool on, upright;
+    int x, y, width;        /* world cells */
+    float z;                /* the wall, or the cell's south edge */
+    float open;             /* 0-1 */
+} VoxelDoor;
+
+static void FindDoor(VoxelDoor *door)
+{
+    /* The wall last found: looking for it reads the whole model. */
+    static int lastLayout = -1, lastX, lastY;
+    static bool lastUpright;
+    static float lastZ;
+    const VoxelMapInstance *inst;
+    s16 x, y;
+    u8 width, level;
+
+    door->on = false;
+    if (VoxelWorld_InstanceCount() == 0 || !PortDoor_Get(&x, &y, &width, &level))
+        return;
+    inst = VoxelWorld_Instance(0);
+    door->on = true;
+    door->x = x - MAP_OFFSET + inst->originX;
+    door->y = y - MAP_OFFSET + inst->originY;
+    door->width = width;
+    door->open = level >= 3 ? 1.0f : level / 3.0f;
+    if (lastLayout != inst->layoutId || lastX != door->x || lastY != door->y)
+    {
+        lastLayout = inst->layoutId;
+        lastX = door->x;
+        lastY = door->y;
+        lastZ = (float)door->y + 1.0f;
+        lastUpright = VoxelBuildings_CellAt(inst, door->x, door->y, NULL, NULL);
+        if (lastUpright)
+            VoxelBuildings_DoorWall(inst, door->x, door->y, &lastZ);
+    }
+    door->upright = lastUpright;
+    door->z = lastZ;
+}
+
+/* In the doorway's column: 0 through it, up to 1 a little way before it. */
+static float DoorLight(const VoxelDoor *door, float cx, float cz)
+{
+    float t;
+
+    if (!door->on || cx < (float)door->x || cx >= (float)(door->x + door->width)
+     || cz < (float)door->y || cz >= door->z + VOXEL_DOOR_DEPTH + VOXEL_DOOR_DUSK)
+        return 1.0f;
+    if (cz <= door->z + VOXEL_DOOR_DEPTH)
+        return 0.0f;
+    t = (cz - door->z - VOXEL_DOOR_DEPTH) / VOXEL_DOOR_DUSK;
+    return VOXEL_DOOR_DARK + (1.0f - VOXEL_DOOR_DARK) * t;
+}
+
+/* The atlas has no black of its own: any opaque texel, drawn at no light. */
+static bool OpaqueTexel(const uint16_t *atlas, float *u, float *v)
+{
+    for (unsigned s = 0; s < VOXEL_SPRITE_SLOTS; ++s)
+    {
+        unsigned baseX = (s % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+        unsigned baseY = (s / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+
+        if (!sSlots[s].valid)
+            continue;
+        for (int y = 0; y < sSlots[s].height; ++y)
+            for (int x = 0; x < sSlots[s].width; ++x)
+                if (atlas[CtrVideo_Texel(baseX + (unsigned)x, baseY + (unsigned)y,
+                                         VOXEL_SPRITE_ATLAS_DIM)] & 1)
+                {
+                    *u = (baseX + x + 0.5f) / (float)VOXEL_SPRITE_ATLAS_DIM;
+                    *v = 1.0f - (baseY + y + 0.5f) / (float)VOXEL_SPRITE_ATLAS_DIM;
+                    return true;
+                }
+    }
+    return false;
+}
+
+static void EmitDoor(VoxelBuilder *builder, const uint16_t *atlas, const VoxelDoor *door)
+{
+    float cx, half, lift, shift, u, v;
+
+    if (!door->on || !OpaqueTexel(atlas, &u, &v))
+        return;
+    cx = (float)door->x + door->width * 0.5f;
+    half = door->width * 0.5f * door->open;
+    lift = VoxelRelief_LiftAt(cx, (float)door->y + 0.5f);
+    shift = VoxelRelief_ShiftAt(cx, (float)door->y + 0.5f);
+    if (door->upright)
+    {
+        float z = door->z + VOXEL_DOOR_DEPTH + shift;
+
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){cx - half, lift,                     z, u, v, 0.0f},
+            &(VoxelVertex){cx + half, lift,                     z, u, v, 0.0f},
+            &(VoxelVertex){cx + half, lift + VOXEL_DOOR_HEIGHT, z, u, v, 0.0f},
+            &(VoxelVertex){cx - half, lift + VOXEL_DOOR_HEIGHT, z, u, v, 0.0f});
+    }
+    else
+    {
+        float y = lift + VOXEL_DECAL_LIFT + 0.01f, z = (float)door->y + shift;
+
+        VoxelBuilder_Quad(builder,
+            &(VoxelVertex){cx - half, y, z + 1.0f, u, v, 0.0f},
+            &(VoxelVertex){cx + half, y, z + 1.0f, u, v, 0.0f},
+            &(VoxelVertex){cx + half, y, z,        u, v, 0.0f},
+            &(VoxelVertex){cx - half, y, z,        u, v, 0.0f});
+    }
 }
 
 #if CTR_VOXEL_LIGHTING
@@ -551,83 +747,9 @@ static void EmitDecal(VoxelBuilder *builder, const VoxelSpriteSlot *slot, unsign
 #define VOXEL_CAST_SHADOW_LIFT 0.03f    /* over decals (0.02) */
 #define VOXEL_CAST_SHADOW_LIT 0.70f     /* sample at or below: no sun */
 
-static void GetDynamicShadowVector(float *outSx, float *outSz, float *outAlpha, float height)
-{
-    if (!CtrSettings_DayNight())
-    {
-        *outSx = VOXEL_SUN_DX * height;
-        *outSz = VOXEL_SUN_DZ * height;
-        *outAlpha = VOXEL_CAST_SHADOW_ALPHA;
-    }
-    else
-    {
-        float t = CtrPlatform_GetDayTime();
-
-        if (t >= 5.5f && t <= 19.5f)
-        {
-            /* Daytime: Sun progresses from East (+X) at dawn to West (-X) at dusk.
-             * 5:30 (Dawn) -> 12:30 (Noon) -> 19:30 (Dusk) */
-            float s = (t - 5.5f) / 14.0f;
-            float angle = s * 3.1415926535f;
-            float sinA = sinf(angle); /* 0 at dawn/dusk, 1.0 at midday */
-            float cosA = cosf(angle); /* +1 at sunrise (East), 0 at midday, -1 at sunset (West) */
-
-            /* Shadow projects opposite to sun position:
-             * Morning (Sun in East): shadow points West (-X)
-             * Evening (Sun in West): shadow points East (+X)
-             * Midday: shadow is short under feet, slight North bias */
-            float stretch = 0.45f + 0.80f * (1.0f - sinA);
-            *outSx = -cosA * stretch * height;
-            *outSz = (0.20f + 0.35f * (1.0f - sinA)) * height;
-            *outAlpha = 0.26f + 0.12f * sinA;
-        }
-        else
-        {
-            /* Night: Soft moon cast */
-            float nt = (t < 5.5f) ? (t + 4.5f) : (t - 19.5f);
-            float ns = nt / 10.0f;
-            float nAngle = ns * 3.1415926535f;
-            float sinM = sinf(nAngle);
-            float cosM = cosf(nAngle);
-
-            *outSx = -cosM * 0.60f * height;
-            *outSz = 0.30f * height;
-            *outAlpha = 0.14f * sinM;
-        }
-    }
-
-    /* Weather shadow attenuation: rain, storms, fog, sandstorm diffuse the direct sun cast */
-    u8 weather = GetCurrentWeather();
-    switch (weather)
-    {
-    case WEATHER_RAIN:
-        *outAlpha *= 0.50f;
-        break;
-    case WEATHER_RAIN_THUNDERSTORM:
-    case WEATHER_DOWNPOUR:
-        *outAlpha *= 0.30f;
-        break;
-    case WEATHER_FOG_HORIZONTAL:
-    case WEATHER_FOG_DIAGONAL:
-        *outAlpha *= 0.35f;
-        break;
-    case WEATHER_SANDSTORM:
-        *outAlpha *= 0.40f;
-        break;
-    case WEATHER_SHADE:
-        *outAlpha *= 0.55f;
-        break;
-    case WEATHER_DROUGHT:
-        *outAlpha = fminf(*outAlpha * 1.25f, 0.45f);
-        break;
-    default:
-        break;
-    }
-}
-
 static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, unsigned index,
                            float worldX, float worldZ, float rightX, float rightZ, float stretch,
-                           float light)
+                           float light, float lift)
 {
     unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
@@ -640,11 +762,12 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
     float v1 = 1.0f - (baseY + rows) / (float)VOXEL_SPRITE_ATLAS_DIM;
     float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
     float height = rows / VOXEL_PIXELS_PER_TILE * stretch;
-    float cx = worldX + 0.5f, cz = worldZ + 0.5f;
+    /* Off the ground by `lift` (riding), the feet's shadow falls that much
+     * further along the sun. */
+    float cx = worldX + 0.5f + VOXEL_SUN_DX * lift, cz = worldZ + 0.5f + VOXEL_SUN_DZ * lift;
     float ax = cx - rightX * halfW, az = cz - rightZ * halfW;
     float bx = cx + rightX * halfW, bz = cz + rightZ * halfW;
-    float sx, sz, maxAlpha;
-    GetDynamicShadowVector(&sx, &sz, &maxAlpha, height);
+    float sx = VOXEL_SUN_DX * height, sz = VOXEL_SUN_DZ * height;
     /* Each corner on the ground under it: at a face's foot the ground under
      * the shadow's far end is not the ground under the feet. */
     float ya = VoxelRelief_LiftAt(ax, az) + VOXEL_CAST_SHADOW_LIFT;
@@ -659,7 +782,7 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
         return;
     if (strength > 1.0f)
         strength = 1.0f;
-    strength *= maxAlpha;
+    strength *= VOXEL_CAST_SHADOW_ALPHA;
     VoxelBuilder_Quad(shadows,
         &(VoxelVertex){ax,      ya, az + za,      u0, v1, strength},
         &(VoxelVertex){bx,      yb, bz + zb,      u1, v1, strength},
@@ -667,48 +790,38 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
         &(VoxelVertex){ax + sx, yd, az + sz + zd, u0, v0, strength});
 }
 
-static void EmitIndoorContactShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, unsigned index,
-                                    float worldX, float worldZ, float rightX, float rightZ)
+/*
+ * The shadow of something lying flat a little over the ground - the surf mon
+ * on the water: its own picture again on the ground, moved along the sun by
+ * how high it is. Mostly under it, it shows as a dark rim on the far side,
+ * which is what sets it on the water.
+ */
+static void EmitDecalShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, unsigned index,
+                            float cx, float cz, float height, float light)
 {
     unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
     float u0 = baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
     float u1 = (baseX + slot->width) / (float)VOXEL_SPRITE_ATLAS_DIM;
-    int rows = VisibleRows(slot);
-    if (rows <= 0)
-        return;
     float v0 = 1.0f - baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
-    float v1 = 1.0f - (baseY + rows) / (float)VOXEL_SPRITE_ATLAS_DIM;
-    float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.40f;
-    float cx = worldX + 0.5f, cz = worldZ + 0.5f;
+    float v1 = 1.0f - (baseY + slot->height) / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
+    float halfH = slot->height / VOXEL_PIXELS_PER_TILE * 0.5f;
+    float x = cx + VOXEL_SUN_DX * height, z0 = cz + VOXEL_SUN_DZ * height;
+    float y = VoxelRelief_LiftAt(x, z0) + VOXEL_CAST_SHADOW_LIFT;
+    float z = z0 + VoxelRelief_ShiftAt(x, z0);
+    float strength = (light - VOXEL_CAST_SHADOW_LIT) / (1.0f - VOXEL_CAST_SHADOW_LIT);
 
-    /* Soft ambient contact pool under feet, slightly elliptical */
-    float forwardX = -rightZ;
-    float forwardZ =  rightX;
-    float halfD = 0.20f;
-
-    float ax = cx - rightX * halfW - forwardX * halfD;
-    float az = cz - rightZ * halfW - forwardZ * halfD;
-    float bx = cx + rightX * halfW - forwardX * halfD;
-    float bz = cz + rightZ * halfW - forwardZ * halfD;
-    float cx2 = cx + rightX * halfW + forwardX * halfD;
-    float cz2 = cz + rightZ * halfW + forwardZ * halfD;
-    float dx = cx - rightX * halfW + forwardX * halfD;
-    float dz = cz - rightZ * halfW + forwardZ * halfD;
-
-    float ya = VoxelRelief_LiftAt(ax, az) + VOXEL_CAST_SHADOW_LIFT;
-    float yb = VoxelRelief_LiftAt(bx, bz) + VOXEL_CAST_SHADOW_LIFT;
-    float yc = VoxelRelief_LiftAt(cx2, cz2) + VOXEL_CAST_SHADOW_LIFT;
-    float yd = VoxelRelief_LiftAt(dx, dz) + VOXEL_CAST_SHADOW_LIFT;
-    float za = VoxelRelief_ShiftAt(ax, az), zb = VoxelRelief_ShiftAt(bx, bz);
-    float zc = VoxelRelief_ShiftAt(cx2, cz2), zd = VoxelRelief_ShiftAt(dx, dz);
-
-    float strength = 0.22f;
+    if (strength <= 0.0f)
+        return;
+    if (strength > 1.0f)
+        strength = 1.0f;
+    strength *= VOXEL_CAST_SHADOW_ALPHA;
     VoxelBuilder_Quad(shadows,
-        &(VoxelVertex){ax,  ya, az + za,  u0, v1, strength},
-        &(VoxelVertex){bx,  yb, bz + zb,  u1, v1, strength},
-        &(VoxelVertex){cx2, yc, cz2 + zc, u1, v0, strength},
-        &(VoxelVertex){dx,  yd, dz + zd,  u0, v0, strength});
+        &(VoxelVertex){x - halfW, y, z + halfH, u0, v1, strength},
+        &(VoxelVertex){x + halfW, y, z + halfH, u1, v1, strength},
+        &(VoxelVertex){x + halfW, y, z - halfH, u1, v0, strength},
+        &(VoxelVertex){x - halfW, y, z - halfH, u0, v0, strength});
 }
 #endif
 
@@ -801,6 +914,11 @@ bool8 CtrSprite_IsVoxelWeather(const struct Sprite *sprite);   /* sprite.c */
 #define VOXEL_EFFECTS_MAX VOXEL_SPRITE_SLOTS
 /* How far an effect card sits in front of or behind the object it belongs to. */
 #define VOXEL_EFFECT_DEPTH 0.04f
+/* The surf mon lies on the water (the GBA draws it from above, an oval) and
+ * its rider sits on its back this much over it, tiles. */
+#define VOXEL_SURF_SEAT 0.04f
+/* How high the mon's back stands over the water, for its shadow, tiles. */
+#define VOXEL_SURF_BODY 0.12f
 
 typedef struct
 {
@@ -820,6 +938,7 @@ typedef struct
     unsigned slot;
     int owner;               /* object index, or -1 */
     bool front, decal, tile;
+    bool surf;               /* the surf mon: lying on the water, ridden */
 } VoxelEffectCard;
 
 static bool IsTemplate(const struct SpriteTemplate *template, unsigned first, unsigned last)
@@ -941,8 +1060,6 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
     /* Towards the camera, along the ground. */
     float towardX = sinf(yawRad), towardZ = cosf(yawRad);
     float pixel = stretch / VOXEL_PIXELS_PER_TILE;
-    /* Forward camera bias prevents character occlusion by adjacent wall corners */
-    const float billboardBias = 0.25f;
     /* Static, not automatic: this runs in the VBlank handler. */
     static VoxelObjectCard objects[VOXEL_SPRITE_SLOTS];
     static VoxelEffectCard effects[VOXEL_EFFECTS_MAX];
@@ -951,6 +1068,7 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
     bool claimed[VOXEL_SPRITE_SLOTS] = {false};
     unsigned objectTileCount = 0, effectCount = 0;
     unsigned updates = 0;
+    VoxelDoor door;
     sPlayerVertexFirst = -1;
 
     /* The lighting caches are the chunks' own, valid until the world
@@ -1080,22 +1198,25 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
             break;
         effect->sprite = sprite;
         effect->slot = (unsigned)slot;
+        effect->surf = sprite->template == gFieldEffectObjectTemplatePointers[FLDEFFOBJ_SURF_BLOB];
         effect->decal = IsDecal(sprite->template);
         effect->tile = IsTileEffect(sprite->template);
         effect->owner = effect->decal || effect->tile ? -1 : EffectOwner(sprite, objects);
         effect->front = effect->owner < 0 || DrawnOver(sprite, objects[effect->owner].sprite);
         /* Behind its object and below its feet: what the object rides. Only
          * the surf mon is ridden; grass behind a walker's feet, as it steps
-         * onto or off a tile of it, lifted the walker a moment. */
-        if (effect->owner >= 0 && !effect->front
-         && sprite->template == gFieldEffectObjectTemplatePointers[FLDEFFOBJ_SURF_BLOB])
+         * onto or off a tile of it, lifted the walker a moment. The mon is
+         * seen from above, an oval on the water: stood up as a card it was a
+         * wall with the rider perched on top of it, in the air. It lies on
+         * the water instead (a decal placed from the player, bobbing as the
+         * GBA bobs it) and the rider sits just over its back. */
+        if (effect->surf)
         {
-            VoxelObjectCard *object = &objects[effect->owner];
-            int base = sprite->y + sprite->centerToCornerVecY + h;
-            float need = (base - object->feet) * pixel;
-
-            if (need > object->rise)
-                object->rise = need;
+            if (effect->owner >= 0 && !effect->front && VOXEL_SURF_SEAT > objects[effect->owner].rise)
+                objects[effect->owner].rise = VOXEL_SURF_SEAT;
+            effect->decal = true;
+            effect->owner = -1;
+            effect->front = true;
         }
         ++effectCount;
     }
@@ -1107,34 +1228,38 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
         sSlots[s].valid = false;
     }
 
+    FindDoor(&door);
+    EmitDoor(builder, atlas, &door);
     for (unsigned i = 0; i < VOXEL_SPRITE_SLOTS; ++i)
     {
         VoxelObjectCard *card = &objects[i];
-        float rise;
+        float rise, dusk;
 
         if (!card->drawn)
             continue;
-        /* Riding: up and down with what it rides, plus sprite y2 jump/hop elevation arc. */
-        rise = (card->rise > 0.0f ? card->rise : 0.0f) - card->sprite->y2 * pixel;
+        /* Through an open door: gone, shadow and all. */
+        dusk = DoorLight(&door, card->worldX + 0.5f, card->worldZ + 0.5f);
+        if (dusk <= 0.0f)
+            continue;
+        /* Riding: up and down with what it rides, as the GBA bobs both. */
+        rise = card->rise > 0.0f ? card->rise - card->sprite->y2 * pixel : 0.0f;
+        /* Jumping: the arc the GBA draws, over a shadow left on the ground. */
+        if (IsJumping(&gObjectEvents[i], card->sprite))
+            rise -= card->sprite->y2 * pixel;
 #if CTR_VOXEL_LIGHTING
-        /* Riding, it is off the ground: a shadow cast from its feet would be
-         * left behind on the water. The GBA gives the surf mon none either. */
-        if (shadows != NULL && card->rise <= 0.0f)
-        {
-            if (card->outdoor)
-                EmitCastShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ,
-                               stretch, card->shade);
-            else
-                EmitIndoorContactShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ);
-        }
+        /* Riding, it is off the ground: its shadow falls from its feet,
+         * moved along the sun by how high they are, onto the water past
+         * the mon's back. */
+        if (shadows != NULL && card->outdoor)
+            EmitCastShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ,
+                           stretch, card->shade, card->rise > 0.0f ? rise : 0.0f);
 #endif
         if (reflections != NULL && gObjectEvents[i].hasReflection)
             EmitReflection(reflections, &sSlots[i], i, card->worldX, card->worldZ,
                            rightX, rightZ, stretch);
         unsigned first = builder->count;
         EmitBillboard(builder, &sSlots[i], i, card->worldX + 0.5f, card->worldZ + 0.5f,
-                      towardX * billboardBias, towardZ * billboardBias, rise,
-                      rightX, rightZ, stretch, card->shade);
+                      0.0f, 0.0f, rise, rightX, rightZ, stretch, card->shade * dusk);
         if (i == gPlayerAvatar.objectEventId && builder->count == first + 6)
             sPlayerVertexFirst = (int)first;
     }
@@ -1173,13 +1298,13 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
             }
             if (fabsf(cx - camera->targetX) > 24.0f || fabsf(cz - camera->targetZ) > 24.0f)
                 continue;
-            EmitDecal(builder, &sSlots[effect->slot], effect->slot, cx, cz, shade);
+            EmitDecal(builder, &sSlots[effect->slot], effect->slot, cx, cz, 0.0f, shade);
             continue;
         }
         if (effect->owner >= 0)
         {
             const VoxelObjectCard *object = &objects[effect->owner];
-            float depth = (effect->front ? VOXEL_EFFECT_DEPTH : -VOXEL_EFFECT_DEPTH) + billboardBias;
+            float depth = effect->front ? VOXEL_EFFECT_DEPTH : -VOXEL_EFFECT_DEPTH;
             float along = (x - object->screenX) / VOXEL_PIXELS_PER_TILE;
             /* The owner's feet on the ground, lifted by what it rides. */
             float rise = object->rise + (object->feet - base - sprite->y2) * pixel;
@@ -1208,14 +1333,35 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
                    + (base - h / 2 - (reference->base - 8)) / VOXEL_PIXELS_PER_TILE;
                 if (fabsf(cx - camera->targetX) > 24.0f || fabsf(cz - camera->targetZ) > 24.0f)
                     continue;
-                EmitDecal(builder, &sSlots[effect->slot], effect->slot, cx, cz, reference->shade);
+                if (effect->surf)
+                {
+                    /* Up and down with the GBA's bob, its rider with it. */
+                    float lift = sprite->y2 < 0 ? -sprite->y2 * pixel : 0.0f;
+
+                    /* Under its rider as the GBA draws the two: the rider's
+                     * feet a little in front of the oval's middle. Placed as
+                     * ground, it lay 8 px south of that - the rider's card
+                     * stands on its tile's middle, where the GBA draws feet
+                     * at the tile's bottom edge - and the rider sat on its
+                     * back rim instead. */
+                    cz -= 8.0f / VOXEL_PIXELS_PER_TILE;
+
+                    EmitDecal(builder, &sSlots[effect->slot], effect->slot, cx, cz, lift,
+                              reference->shade);
+#if CTR_VOXEL_LIGHTING
+                    if (shadows != NULL && reference->outdoor)
+                        EmitDecalShadow(shadows, &sSlots[effect->slot], effect->slot, cx, cz,
+                                        lift + VOXEL_SURF_BODY, reference->shade);
+#endif
+                    continue;
+                }
+                EmitDecal(builder, &sSlots[effect->slot], effect->slot, cx, cz, 0.0f, reference->shade);
                 continue;
             }
             cz = reference->worldZ + 0.5f + (base - reference->base) / VOXEL_PIXELS_PER_TILE;
             if (fabsf(cx - camera->targetX) > 24.0f || fabsf(cz - camera->targetZ) > 24.0f)
                 continue;
-            EmitBillboard(builder, &sSlots[effect->slot], effect->slot, cx, cz,
-                          towardX * billboardBias, towardZ * billboardBias,
+            EmitBillboard(builder, &sSlots[effect->slot], effect->slot, cx, cz, 0.0f, 0.0f,
                           -sprite->y2 * pixel, rightX, rightZ, stretch, reference->shade);
         }
     }

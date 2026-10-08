@@ -1304,6 +1304,44 @@ static void BuildBackgroundCaches(void)
     sDst = sCanvas;
 }
 
+/*
+ * Under the title screen: the developer's logo in the bottom-left corner and
+ * the build's version (CTR_APP_VERSION, the Makefile's APP_VERSION) in the
+ * bottom-right one, both in the logo's own grey over black.
+ */
+#ifndef CTR_APP_VERSION
+#define CTR_APP_VERSION "0.3.0"
+#endif
+#define TITLE_MARGIN_X 16
+#define TITLE_MARGIN_Y 6
+#define TITLE_GREY 100   /* the logo's coverage at its strongest */
+
+static void DrawTitleCredit(void)
+{
+    int x0 = TITLE_MARGIN_X, y0 = H - TITLE_MARGIN_Y - ART_LOGO_H;
+    u16 grey = PackRgb(TITLE_GREY, TITLE_GREY, TITLE_GREY);
+
+    for (int y = 0; y < ART_LOGO_H; ++y)
+        for (int x = 0; x < ART_LOGO_W; ++x)
+        {
+            u8 a = sArtLogo[y * ART_LOGO_W + x];
+
+            if (a)
+                Put(x0 + x, y0 + y, PackRgb(a, a, a));
+        }
+    /* Its capitals level with the logo's lettering (the logo's rows 8 to 20). */
+    {
+        const u8 *str = Ascii("v" CTR_APP_VERSION);
+        int ix0, ix1, top, bottom;
+
+        if (!sNormal.glyphs)
+            return;
+        InkColumns(&sNormal, str, &ix0, &ix1);
+        CapRows(&sNormal, &top, &bottom);
+        DrawStr(&sNormal, str, W - TITLE_MARGIN_X - ix1, y0 + 8 + (12 - (bottom - top)) / 2 - top, grey, 0);
+    }
+}
+
 static void Render(const ViewState *s)
 {
     ResolveFonts();
@@ -1315,6 +1353,8 @@ static void Render(const ViewState *s)
     if (s->mode == MODE_OFF)
     {
         memset(sCanvas, 0, sizeof(sCanvas));
+        if (s->title)
+            DrawTitleCredit();
     }
     else if (s->mode >= MODE_BATTLE_INFO)
     {

@@ -134,4 +134,14 @@ float CtrVoxel_GetCameraYaw(void);
 int CtrVoxel_GetCameraQuadrant(void);
 void CtrVoxel_InvalidateTreeQuadrant(void);
 
+typedef struct
+{
+    float flight; /* the camera's arc: up and away mid-flight */
+    float speed;  /* how fast it travels */
+    float impact; /* the landing, dying away */
+    float bars;   /* the cinema bars, closed in */
+    float time;
+} CtrVoxelBattleIntro;
+void CtrVoxel_BattleIntro(CtrVoxelBattleIntro *intro);
+
 #endif

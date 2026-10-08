@@ -51,8 +51,10 @@ steps are ledge too; a lip comes down to the ground where the ledge ends.
 
 import argparse
 import collections
+import itertools
 import json
 import math
+import operator
 import os
 import struct
 import sys
@@ -160,6 +162,7 @@ def commonest(seq):
 import voxel_building as vb  # noqa: E402
 import voxel_cells as vc  # noqa: E402
 import voxel_props  # noqa: E402
+import voxel_relief_fixes  # noqa: E402
 
 PORT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -793,6 +796,18 @@ def drawn_ok(name):
 # laid flat.
 
 SEAM_WEIGHT = 16     # per cell of seam, as a column of face pixels counts
+# Where a loop of maps does not close, the step it leaves goes to the seam
+# with the least say, and nothing in the drawing says which one should be:
+# these are the ones chosen, out in the open sea, and why. A seam here keeps
+# STEP_SEAM_WEIGHT a cell, so the loop's level is given up there and nowhere
+# else (no other loop runs through it).
+STEP_SEAMS = {
+    ("LAYOUT_ROUTE107", "LAYOUT_ROUTE108"):
+        "the sea round Route 104's beach stands a level under the sea round "
+        "Slateport; on Route 106's seam with Dewford the step cut the ridge, "
+        "the wood and the beach they share",
+}
+STEP_SEAM_WEIGHT = 1
 HARD_WEIGHT = 1e6    # ground walked from one to the other
 LOOSE_WEIGHT = 0.01  # a block nothing places: kept near its group's ground
 WORLD_ROOT = "LAYOUT_LITTLEROOT_TOWN"
@@ -1009,7 +1024,8 @@ def world_levels():
                 if sa is None or sb is None:
                     continue
                 # off[a] + h[a] = off[b] + h[b]
-                samples[(sa[0], sb[0])].append((sb[1] - sa[1], SEAM_WEIGHT))
+                w = STEP_SEAM_WEIGHT if (a, b) in STEP_SEAMS or (b, a) in STEP_SEAMS else SEAM_WEIGHT
+                samples[(sa[0], sb[0])].append((sb[1] - sa[1], w))
         fixed = {}
         root = index.get(("f", WORLD_ROOT))
         # one node held in every piece of the world: Littleroot where it is
@@ -1043,7 +1059,7 @@ def world_levels():
         broken = collections.Counter()
         for (a, b), v in samples.items():
             for d, w in v:
-                if w == SEAM_WEIGHT and abs(off[a] - off[b] - d) > 8:
+                if w in (SEAM_WEIGHT, STEP_SEAM_WEIGHT) and abs(off[a] - off[b] - d) > 8:
                     broken[(nodes[a][1], nodes[b][1])] += 1
         return regions, base, broken
 
@@ -1104,6 +1120,7 @@ def drawn_canvas(name):
     side = [[0] * CW for _ in range(CH)]
     flat = [[False] * CW for _ in range(CH)]
     face_low = set()
+    tile_kinds = {}     # (tilesets, metatile, layers, stair) -> its 16 rows of kinds
     entries = {e["id"]: e for e in voxel_props._layouts()}
     for lid, (ox, oy) in members.items():
         L, A = layouts[lid], _ART[lid]
@@ -1162,29 +1179,33 @@ def drawn_canvas(name):
                                             or L.behaviour(cx, cy) in FLAT_BEHAVIOURS):
                     flat[oy + cy][ox + cx] = ("bridge" if L.behaviour(cx, cy) in FLAT_BEHAVIOURS else
                                               role if role in ("water", "signpost") else "floor")
-                img = A.cell_image(A.metatile(cx, cy)).load()
+                layers = (0, 1)
                 if (cx, cy) in props:
-                    img = A.cell_image(m, layers=(0,)).load()
+                    layers = (0,)
                 if drawn_as == ("face", True):
                     # a south face with a tree's crown drawn over it on the
                     # upper layer (Dewford's trees under Route 106's
                     # mountain): its lower layer is a face of the General
                     # tileset, tile for tile. It is that face; the crown
                     # only stands in front of it.
-                    img = A.cell_image(m, layers=(0,)).load()
+                    layers = (0,)
                 stair = role == "stair" and not flat[oy + cy][ox + cx]
                 if m in DIRT:
                     for j in range(16):
                         kind[(oy + cy) * 16 + j][(ox + cx) * 16:(ox + cx + 1) * 16] = [GROUND] * 16
                     continue
+                # the same metatile reads the same: its rows, worked out once
+                key = (A.primary, A.secondary, m, layers, stair)
+                rows = tile_kinds.get(key)
+                if rows is None:
+                    img = A.cell_image(m, layers=layers).load()
+                    rows = tile_kinds[key] = [
+                        [FREE if stair else TOP if c in ROCK_TOP else
+                         FACE if c in ROCK_FACE else FLECK if c in ROCK_FLECK else
+                         RIM if c in ROCK_RIM else GROUND
+                         for c in (img[i, j][:3] for i in range(16))] for j in range(16)]
                 for j in range(16):
-                    row = kind[(oy + cy) * 16 + j]
-                    for i in range(16):
-                        c = img[i, j][:3]
-                        row[(ox + cx) * 16 + i] = (
-                            FREE if stair else TOP if c in ROCK_TOP else
-                            FACE if c in ROCK_FACE else FLECK if c in ROCK_FLECK else
-                            RIM if c in ROCK_RIM else GROUND)
+                    kind[(oy + cy) * 16 + j][(ox + cx) * 16:(ox + cx + 1) * 16] = rows[j]
     # a bridge's ends, drawn over the player where they cross a rock's lip,
     # are the bridge
     grow = True
@@ -1240,14 +1261,11 @@ def drawn_canvas(name):
     st = [[0] * (W + 1) for _ in range(H + 1)]
     sf = [[0] * (W + 1) for _ in range(H + 1)]
     for y in range(H):
-        row, t_above, f_above, t_row, f_row = kind[y], st[y], sf[y], st[y + 1], sf[y + 1]
-        t = f = 0
-        for x in range(W):
-            k = row[x]
-            t += k == TOP or k == RIM
-            f += k == FACE
-            t_row[x + 1] = t_above[x + 1] + t
-            f_row[x + 1] = f_above[x + 1] + f
+        row = kind[y]
+        t = itertools.accumulate([k == TOP or k == RIM for k in row])
+        f = itertools.accumulate([k == FACE for k in row])
+        st[y + 1][1:] = map(operator.add, st[y][1:], t)
+        sf[y + 1][1:] = map(operator.add, sf[y][1:], f)
     for y in range(H):
         y0, y1 = max(0, y - R), min(H, y + R + 1)
         row = kind[y]
@@ -1634,24 +1652,43 @@ def drawn_prepare(name):
         while 0 <= low < CW and side[cy][low] == side[cy][cx]:
             low -= side[cy][cx]
         return 0 <= low < CW and flat[cy][low] == "water"
+    # whether a region runs on across the edge between two cells: apart and
+    # band_seam read only the cells (both are False within one cell)
+    crossing = {}
+
+    def crosses(a, b, i, j):
+        key = (a >> 4, b >> 4, i >> 4, j >> 4)
+        v = crossing.get(key)
+        if v is None:
+            v = crossing[key] = not apart(a, b, i, j) and not band_seam(a, b, i, j)
+        return v
     for y in range(H):
+        krow, rrow = kind[y], region[y]
         for x in range(W):
-            k = kind[y][x]
-            if k not in (GROUND, TOP) or region[y][x] >= 0:
+            k = krow[x]
+            if (k != GROUND and k != TOP) or rrow[x] >= 0:
                 continue
             n = len(sizes)
             stack, count = [(x, y)], 0
-            region[y][x] = n
+            rrow[x] = n
             while stack:
                 a, b = stack.pop()
                 count += 1
-                for (i, j) in ((a + 1, b), (a - 1, b), (a, b + 1), (a, b - 1)):
-                    # (both are False within one cell: asked only across an edge)
-                    if (0 <= i < W and 0 <= j < H and region[j][i] < 0 and kind[j][i] == k
-                            and ((a >> 4 == i >> 4 and b >> 4 == j >> 4)
-                                 or (not apart(a, b, i, j) and not band_seam(a, b, i, j)))):
-                        region[j][i] = n
-                        stack.append((i, j))
+                ra, ka = region[b], kind[b]
+                # west and east, in the row
+                if a + 1 < W and ra[a + 1] < 0 and ka[a + 1] == k and ((a + 1) & 15 or crosses(a, b, a + 1, b)):
+                    ra[a + 1] = n
+                    stack.append((a + 1, b))
+                if a > 0 and ra[a - 1] < 0 and ka[a - 1] == k and (a & 15 or crosses(a, b, a - 1, b)):
+                    ra[a - 1] = n
+                    stack.append((a - 1, b))
+                # south and north
+                if b + 1 < H and region[b + 1][a] < 0 and kind[b + 1][a] == k and ((b + 1) & 15 or crosses(a, b, a, b + 1)):
+                    region[b + 1][a] = n
+                    stack.append((a, b + 1))
+                if b > 0 and region[b - 1][a] < 0 and kind[b - 1][a] == k and (b & 15 or crosses(a, b, a, b - 1)):
+                    region[b - 1][a] = n
+                    stack.append((a, b - 1))
             sizes.append(count)
     cut_apart = set() if name not in WRAP_GROUPS else split_wrapped(region, sizes, kind, side,
                   {(cx, cy) for cy in range(CH) for cx in range(CW)
@@ -3413,7 +3450,7 @@ def cell_shapes(lid, roles_layout, h, cut):
     plain_cache, pix_cache = {}, {}
     # nothing they read changes while the flanks are measured: each answer
     # is kept, a pixel being asked about again and again
-    ground_cache, beside_cache, crossed_cache = {}, {}, {}
+    ground_cache, crossed_cache = {}, {}
     light = ROCK_TOP | ROCK_RIM
 
     def is_ground(X, Y):
@@ -3439,30 +3476,69 @@ def cell_shapes(lid, roles_layout, h, cut):
             pix_cache[c] = art.cell_image(art.metatile(*c)).convert("RGB").load()
         return pix_cache[c][X % 16, Y % 16] in light
 
-    def beside(X, Y):
-        v = beside_cache.get((X, Y))
-        if v is None:
-            v = beside_cache[(X, Y)] = all(is_ground(X, Y + k) for k in (0, -2, 2, -5, 5))
-        return v
-
     def crossed(X, Y):
         if (X, Y) not in crossed_cache:
             crossed_cache[(X, Y)] = _crossed(X, Y)
         return crossed_cache[(X, Y)]
 
+    ground_rows, beside_rows = {}, {}
+
+    def ground_row(Y):
+        """[is_ground(x, Y) for every x of the row], a cell at a time."""
+        row = ground_rows.get(Y)
+        if row is None:
+            row = []
+            for cx in range(W):
+                if Y < 0 or not inside((cx, Y // 16)):
+                    row += [False] * 16
+                elif (cx, Y // 16) in content:
+                    m = bgmask.get((cx, Y // 16))
+                    bits = m[Y % 16] if m is not None else 0
+                    row += [bool((bits >> x) & 1) for x in range(16)]
+                else:
+                    c = (cx, Y // 16)
+                    if c not in plain_cache:
+                        plain_cache[c] = max(max(r) for r in grid(c)) <= 0.5
+                    row += [plain_cache[c]] * 16
+            ground_rows[Y] = row
+        return row
+
+    def beside_row(Y):
+        """For row Y: the nearest x beside the ground - the ground over and
+        under it too, 2 and 5 rows away - at or west of each x (-1: none),
+        and at or east of it (W * 16: none)."""
+        near = beside_rows.get(Y)
+        if near is None:
+            rows = [ground_row(Y + k) for k in (0, -2, 2, -5, 5)]
+            n = W * 16
+            west, east = [-1] * n, [n] * n
+            last = -1
+            for x in range(n):
+                if all(r[x] for r in rows):
+                    last = x
+                west[x] = last
+            last = n
+            for x in range(n - 1, -1, -1):
+                if west[x] == x:
+                    last = x
+                east[x] = last
+            near = beside_rows[Y] = (west, east)
+        return near
+
     def _crossed(X, Y):
         """How much of the flank on row Y is behind corner X, 0..1, or None
         where the row has no flank beside it."""
         best = None
+        west, east = beside_row(Y)
         for sign in (-1, 1):
+            # the first x beside the ground, FLANK + 1 pixels at most from X
+            # (X - 1 and down to the west, X and up to the east)
             xg = None
-            for step in range(FLANK + 1):
-                x = X - 1 - step if sign < 0 else X + step
-                if not (0 <= x < W * 16):
-                    break
-                if beside(x, Y):
-                    xg = x
-                    break
+            if sign < 0:
+                if X >= 1 and 0 <= west[min(X - 1, W * 16 - 1)] >= X - 1 - FLANK:
+                    xg = west[min(X - 1, W * 16 - 1)]
+            elif X < W * 16 and east[X] < W * 16 and east[X] <= X + FLANK:
+                xg = east[X]
             if xg is None:
                 continue
             # the outline's first rock pixel, and the shaded run from it
@@ -3840,6 +3916,13 @@ def main():
             print("proof:", proof(name, os.path.join(args.proof, "terraces_%s.png" % name)))
     if args.output:
         export(lids, args.output)
+        # the mountains of the maps chosen so far, counted tile by tile
+        # (voxel_terraces.py) over the solve, in the world it placed
+        import voxel_terraces
+        voxel_terraces.apply_file(args.output)
+        # the hand corrections (assets/voxel/relief_fixes.json) over the drawing's
+        if not os.environ.get("VOXEL_RELIEF_NO_FIXES"):
+            voxel_relief_fixes.apply_file(args.output)
 
 
 if __name__ == "__main__":

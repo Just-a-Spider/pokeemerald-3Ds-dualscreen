@@ -15,6 +15,7 @@
 #include "3ds_data.h"
 #include "3ds_pak.h"
 #include "3ds_platform.h"
+#include "../../include/constants/global.h"
 
 /* 0 = choose at runtime; 1 = RomFS, 2 = loose, 3 = pack. */
 #ifndef CTR_DATA_BACKEND
@@ -23,11 +24,23 @@
 
 #define ENGINE_ABI_PATH "engine/abi.bin"
 
-/* The one ROM the data pack can be built from: Pokémon Emerald (USA, Europe). */
+/* The ROM the data pack must come from: the one of the game's compiled
+ * language, never another locale's data. */
+#if GAME_LANGUAGE == LANGUAGE_SPANISH
+static const uint8_t sSupportedRomSha1[20] = {
+    0xfe, 0x15, 0x58, 0xa3, 0xdc, 0xb0, 0x36, 0x0a, 0xb5, 0x58,
+    0x96, 0x9e, 0x09, 0xb6, 0x90, 0x88, 0x8b, 0x84, 0x6d, 0xd9,
+};
+#define SUPPORTED_ROM_DETAIL "Usa la ROM de Pokemon Esmeralda\n" \
+                             "(Espana, BPES) con este cliente."
+#else
 static const uint8_t sSupportedRomSha1[20] = {
     0xf3, 0xae, 0x08, 0x81, 0x81, 0xbf, 0x58, 0x3e, 0x55, 0xda,
     0xf9, 0x62, 0xa9, 0x2b, 0xb4, 0x6f, 0x4f, 0x1d, 0x07, 0xb7,
 };
+#define SUPPORTED_ROM_DETAIL "Only Pokemon Emerald (USA, Europe) is\n" \
+                             "supported. Run the builder with that ROM."
+#endif
 
 typedef struct
 {
@@ -121,9 +134,7 @@ static bool OpenPak(void)
         SetError("The data pack does not match this release.", detail);
         goto fail;
     case CTR_PAK_BAD_ROM:
-        SetError("The data pack comes from another ROM.",
-                 "Only Pokemon Emerald (USA, Europe) is\n"
-                 "supported. Run the builder with that ROM.");
+        SetError("The data pack comes from another ROM.", SUPPORTED_ROM_DETAIL);
         goto fail;
     default:
         SetError("The data pack is damaged.",

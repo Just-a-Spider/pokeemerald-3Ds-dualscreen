@@ -8,6 +8,10 @@
  * and scans HID. Nothing about the game's control flow is re-implemented.
  */
 
+/* Before the game's headers, whose global.h defines abs and friends. */
+#include <setjmp.h>
+#include <stdlib.h>
+
 #include "global.h"
 #include "main.h"
 #include "overworld.h"
@@ -20,7 +24,15 @@
 #include "scanline_effect.h"
 #include "item_menu.h"
 #include "party_menu.h"
+#include "fldeff_misc.h"
+#include "battle_pyramid.h"
+#include "sprite.h"
 #include "constants/party_menu.h"
+#ifdef CTR_TEST_BATTLE
+#include "battle_setup.h"
+#include "script_pokemon_util.h"
+#include "constants/species.h"
+#endif
 #include "port_platform.h"
 #include "port_log.h"
 #include "port_prof.h"
@@ -37,6 +49,7 @@
 void AgbMain(void);
 extern IntrFunc gIntrTable[];
 void CtrEmu_Reset(void);
+u16 Platform_GetKeyInput(void);
 void CtrEmu_BeginVBlank(void);
 void CtrEmu_EndVBlank(void);
 
@@ -57,6 +70,80 @@ static bool sStarted;
 static void StartCgbChannels(void)
 {
     cgb_audio_init(CTR_AUDIO_SAMPLE_RATE);
+}
+
+/*
+ * Soft reset: A+B+START+SELECT, and the game's own DoSoftReset (after the save
+ * is cleared, a failed save, the clock reset and the like). The GBA clears its
+ * RAM and starts the game again. Here the game's variables (its .data and .bss,
+ * gathered by emerald3ds.ld.in) are put back as they were when AgbMain first
+ * started, the emulated hardware is cleared, and AgbMain is entered again. Not
+ * put back: the game's platform/ layer (emulated hardware, the flash with the
+ * save), the port's state and the data the port loaded before AgbMain.
+ */
+extern char __ctr_game_data[], __ctr_game_data_end[];
+extern char __ctr_game_bss[], __ctr_game_bss_end[];
+static char *sGameAtStart;
+static jmp_buf sAgbMainEntry;
+static u32 sResets;
+
+static size_t GameDataBytes(void) { return (size_t)(__ctr_game_data_end - __ctr_game_data); }
+static size_t GameBssBytes(void) { return (size_t)(__ctr_game_bss_end - __ctr_game_bss); }
+
+static void KeepGameAtStart(void)
+{
+    sGameAtStart = malloc(GameDataBytes() + GameBssBytes());
+    if (sGameAtStart == NULL)
+    {
+        CtrLog_Write(CTR_LOG_ERROR, "soft reset unavailable: no memory for %lu KiB",
+                     (unsigned long)((GameDataBytes() + GameBssBytes()) >> 10));
+        return;
+    }
+    memcpy(sGameAtStart, __ctr_game_data, GameDataBytes());
+    memcpy(sGameAtStart + GameDataBytes(), __ctr_game_bss, GameBssBytes());
+    CtrLog_Write(CTR_LOG_GAME, "soft reset ready: game data %lu KiB, bss %lu KiB",
+                 (unsigned long)(GameDataBytes() >> 10), (unsigned long)(GameBssBytes() >> 10));
+}
+
+/*
+ * The game reads the keys the frame boundary scanned, and a reset comes before
+ * the next boundary: with A+B+START+SELECT still held, AgbMain would reset
+ * again at once, for ever, and nothing would scan the keys (nor answer HOME).
+ * The GBA reads them live and resets until they are let go; here the reset
+ * waits, frame by frame, until they are.
+ */
+static void WaitForResetKeysUp(void)
+{
+    const u16 keys = A_BUTTON | B_BUTTON | START_BUTTON | SELECT_BUTTON;
+
+    while ((Platform_GetKeyInput() & keys) == keys)
+    {
+        CtrPlatform_SleepUs(1000000 / 60);
+        if (!CtrPlatform_BeginFrame())
+        {
+            CtrPlatform_Shutdown();
+            exit(0);
+        }
+    }
+}
+
+void CtrGame_SoftReset(void)
+{
+    if (sGameAtStart == NULL)
+    {
+        CTR_STUB("RESET", "soft reset unavailable");
+        return;
+    }
+    /* The sound worker mixes from the game's variables: not while they change. */
+    CtrAudio_LockSound();
+    memcpy(__ctr_game_data, sGameAtStart, GameDataBytes());
+    memcpy(__ctr_game_bss, sGameAtStart + GameDataBytes(), GameBssBytes());
+    CtrEmu_Reset();
+    StartCgbChannels();
+    CtrAudio_UnlockSound();
+    ++sResets;
+    WaitForResetKeysUp();
+    longjmp(sAgbMainEntry, 1);
 }
 
 static void CheckAudioRate(void)
@@ -350,6 +437,38 @@ static void CaptureLineRegisters(void)
  * intro and the title screen drive, and window 0's edges, which the PokéNav
  * moves to light its chosen option.
  */
+/*
+ * The dark of a cave that needs Flash, and of the Battle Pyramid: the field
+ * writes a circle of window 0 edges round the middle of the screen, line by
+ * line (src/field_screen_effect.c SetFlashScanlineEffectWindowBoundaries),
+ * with everything outside it hidden but the text layer. An 8-bit edge cannot
+ * reach across 400 pixels, so the compositor is handed the circle itself:
+ * its radius, read back from the line through its centre, where the game
+ * writes exactly centre -/+ radius, and the player it is centred on (on the
+ * GBA the middle of the screen is the middle of the player's metatile).
+ */
+static bool CaptureFieldLight(const struct ScanlineEffect *effect, bool active)
+{
+    const struct Sprite *player;
+    unsigned across, left, radius;
+
+    if (!active || effect->dmaDest != &REG_WIN0H || ((effect->dmaControl >> 16) & DMA_32BIT)
+     || sTransition.on || gSaveBlock1Ptr == NULL || gMapHeader.mapLayout == NULL
+     || (gSaveBlock1Ptr->flashLevel == 0 && !InBattlePyramid_())
+     || gPlayerAvatar.spriteId >= MAX_SPRITES)
+        return false;
+    /* Both buffers hold the same circle once the radius settles; the one the
+     * DMA would read this frame is the one just swapped out. */
+    across = gScanlineEffectRegBuffers[effect->srcBuffer ^ 1][DISPLAY_HEIGHT / 2];
+    left = across >> 8;
+    radius = left > 0 ? DISPLAY_WIDTH / 2 - left : DISPLAY_WIDTH / 2;
+    if ((across & 0xFF) == 0 && left == 0) return false;
+    player = &gSprites[gPlayerAvatar.spriteId];
+    CtrVideo_SetFieldLight(true, player->x + gSpriteCoordOffsetX,
+                           player->y + gSpriteCoordOffsetY + 8, (int)radius);
+    return true;
+}
+
 static void CaptureLineScroll(void)
 {
     const struct ScanlineEffect *effect = &gScanlineEffect;
@@ -357,6 +476,13 @@ static void CaptureLineScroll(void)
     bool wide = ((effect->dmaControl >> 16) & DMA_32BIT) != 0;
     bool active = effect->state != 0 && effect->state != 3 && effect->dmaDest;
 
+    if (CaptureFieldLight(effect, active))
+    {
+        CtrVideo_SetLineWindow(NULL, 0, false);
+        CtrVideo_SetLineScroll(0, false, NULL, 0);
+        return;
+    }
+    CtrVideo_SetFieldLight(false, 0, 0, 0);
     /* 32-bit: WIN0H and WIN1H together, as the condition graph writes them. */
     if (active && effect->dmaDest == &REG_WIN0H)
         CtrVideo_SetLineWindow(effect->dmaSrcBuffers[effect->srcBuffer ^ 1], 160, wide);
@@ -405,6 +531,12 @@ bool CtrGame_IsOverworld(void)
     return gMain.callback2 == CB2_Overworld || gMain.callback2 == CB2_OverworldBasic;
 }
 
+/* The poison step's effect is running (see DrawPoisonVeil in 3ds_video.c). */
+bool CtrGame_FieldPoison(void)
+{
+    return FldEffPoison_IsActive() != 0;
+}
+
 /* AgbMain never returns, so a reset request restarts the process state here. */
 void CtrGame_Frame(void)
 {
@@ -416,9 +548,8 @@ void CtrGame_Init(void)
 
     if (sStarted)
     {
-        /* SoftReset arrives through the platform hook; AgbMain owns the loop
-         * and cannot be re-entered, so the request is reported, not faked. */
-        CTR_STUB("RESET", "soft reset during AgbMain is not supported yet");
+        /* Once: a soft reset re-enters AgbMain itself (CtrGame_SoftReset). */
+        CTR_STUB("RESET", "CtrGame_Init called again");
         return;
     }
     sStarted = true;
@@ -462,8 +593,12 @@ void CtrGame_Init(void)
     /* A 3DSX gets far less memory under a homebrew loader than an emulator
      * hands out, and the first thing AgbMain does is allocate. Record what is
      * left before and during the first frames so a failure there is readable. */
+    KeepGameAtStart();
     CtrPlatform_ReportMemory("before AgbMain");
-    CtrLog_Write(CTR_LOG_GAME, "entering AgbMain");
+    if (setjmp(sAgbMainEntry) == 0)
+        CtrLog_Write(CTR_LOG_GAME, "entering AgbMain");
+    else
+        CtrLog_Write(CTR_LOG_GAME, "soft reset %lu: entering AgbMain again", (unsigned long)sResets);
     AgbMain();
     CtrPlatform_Fatal("AgbMain returned");
 }
@@ -526,6 +661,20 @@ void CtrGame_WaitFrame(void)
         exit(0);
     }
     CtrPlatform_Diagnostic(sFrames, 0, 0);
+#ifdef CTR_TEST_BATTLE
+    /* Azahar measurement aid (-DCTR_TEST_BATTLE=frame): a wild battle from
+     * wherever the save stands, once the field is up at that frame. */
+    {
+        static bool started;
+
+        if (!started && sFrames >= CTR_TEST_BATTLE && gMain.callback2 == CB2_Overworld)
+        {
+            started = true;
+            CreateScriptedWildMon(SPECIES_ZIGZAGOON, 5, 0);
+            BattleSetup_StartScriptedWildBattle();
+        }
+    }
+#endif
     /* Touch was just scanned and the game has not read its keys yet. */
     {
         uint64_t start = CtrPlatform_Ticks();

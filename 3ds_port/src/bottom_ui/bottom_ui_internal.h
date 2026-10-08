@@ -90,6 +90,7 @@ void CtrPokenavList_SetSelected(u16 selected);
 void CtrPokenavMatchCall_SetOption(u16 cursor);
 void CtrMonMarkings_SetCursor(s8 cursor);
 bool8 CtrStorage_IsOpen(void);
+int CtrTitleScreen_RayquazaBg(void);
 void CtrStorage_Tap(s16 x, s16 y);
 void CtrSummary_Tap(s16 x, s16 y);
 /* item_menu.c: the bag's touches, in pixels of its picture. */

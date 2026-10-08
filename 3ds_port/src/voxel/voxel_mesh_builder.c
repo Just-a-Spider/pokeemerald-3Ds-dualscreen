@@ -202,8 +202,11 @@ bool VoxelMesh_TileUV(VoxelBuilder *builder, int x, int y,
     if (VoxelMesh_Classify(x, y) == VOXEL_SHAPE_VOID)
         return false;
     metatile = VoxelWorld_GetMetatileId(x, y);
-    if (VoxelWorld_UsesTreeSprites(VoxelWorld_GetInstanceAt(x, y)))
-        metatile = VoxelTree_GroundMetatile(metatile);
+    {
+        const VoxelMapInstance *inst = VoxelWorld_GetInstanceAt(x, y);
+        if (VoxelWorld_UsesTreeSprites(inst))
+            metatile = VoxelTree_GroundMetatile(inst->secondaryTileset, metatile);
+    }
     slot = builder->atlas->slotOf[metatile];
 
     if (slot == 0 || slot == VOXEL_SLOT_PENDING)
@@ -558,11 +561,6 @@ static int CutRockPixels(const uint8_t *rows, int i, int j)
     return rock;
 }
 
-static __attribute__((unused)) bool CutHasRock(const uint8_t *rows, int i, int j)
-{
-    return CutRockPixels(rows, i, j) > 0;
-}
-
 /*
  * A cut tile's flat layer, at its foot. Where a block of the drawing has rock
  * in it the layer is `gu0..` - the plain ground behind it - and where it is all
@@ -694,7 +692,15 @@ static void EmitRelief(VoxelBuilder *b, int x, int y, const int16_t *g, const in
                 p[k] = (VoxelVertex){ x + a / (float)n, h + raise, y + c / (float)n + d,
                                       u0 + (u1 - u0) * a / n, v0 + (v1 - v0) * c / n, shade };
             }
-            VoxelBuilder_Quad(b, &p[0], &p[1], &p[2], &p[3]);
+            /* Split along the crease: a mountain's corner is two planes
+             * meeting on a diagonal of the cell (gen_voxel_relief.py), and a
+             * quad on it has its two corners off the crease level with each
+             * other - cut the other way it would fold across the crease. */
+            if (g[j * VOXEL_RELIEF_SIDE + i] == g[(j + 1) * VOXEL_RELIEF_SIDE + i + 1]
+             && g[j * VOXEL_RELIEF_SIDE + i + 1] != g[(j + 1) * VOXEL_RELIEF_SIDE + i])
+                VoxelBuilder_Quad(b, &p[1], &p[2], &p[3], &p[0]);
+            else
+                VoxelBuilder_Quad(b, &p[0], &p[1], &p[2], &p[3]);
         }
     b->vertexFace = false;
     b->artShaded = false;
@@ -853,13 +859,15 @@ static void EmitCliffWalls(VoxelBuilder *b, const VoxelMapInstance *inst, int x,
     bool face = wall != VOXEL_RELIEF_NO_FACE && MetatileUV(b, wall, &f0, &g0, &f1, &g1);
     bool own = art >= 0 ? MetatileUV(b, art, &o0, &p0, &o1, &p1)
                         : VoxelMesh_TileUV(b, x, artY, &o0, &p0, &o1, &p1);
+    /* a hand-built block: its west and east walls are the face as well */
+    bool blockWalls = face && (sides & VOXEL_RELIEF_BLOCK_WALLS) != 0;
 
     for (int d = 0; d < 3; ++d)
     {
         int nx = x + (d == 0 ? -1 : d == 1 ? 1 : 0), ny = y + (d == 2 ? 1 : 0);
         const int16_t *o = NULL, *os = NULL;
 
-        if (d == 2 ? !face : !own)
+        if (d == 2 ? !face : !(own || blockWalls))
             continue;
         if (VoxelWorld_GetInstanceAt(nx, ny) == inst)
         {
@@ -892,7 +900,7 @@ static void EmitCliffWalls(VoxelBuilder *b, const VoxelMapInstance *inst, int x,
              * are the ground beside the rock, not rock: no wall stands on
              * them (a flank's sand corner hung from the rock as a flat
              * yellow triangle) */
-            if (d < 2 && !((sides >> ((d == 0 ? 0u : 4u) + (unsigned)k)) & 1u))
+            if (d < 2 && !blockWalls && !((sides >> ((d == 0 ? 0u : 4u) + (unsigned)k)) & 1u))
                 continue;
             ta = g[ia] / 16.0f; tb = g[ib] / 16.0f;
             ba = (g[ia] > o[ic] ? o[ic] : g[ia]) / 16.0f;
@@ -909,6 +917,41 @@ static void EmitCliffWalls(VoxelBuilder *b, const VoxelMapInstance *inst, int x,
                                   &(VoxelVertex){xb, tb, zb, ub, g0, SHADE_SOUTH},
                                   &(VoxelVertex){xb, bb, zd, ub, g0 + dvb, SHADE_SOUTH},
                                   &(VoxelVertex){xa, ba, zc, ua, g0 + dva, SHADE_SOUTH});
+            }
+            else if (blockWalls)
+            {
+                /* the face down the side, as down the south, laid on the
+                 * wall where it stands in the world: across it by its z,
+                 * down it from the level its top is at (a taller wall
+                 * stretches it). A block's side beside a face is two
+                 * pieces (the rows of two cells): mapped by the world they
+                 * read as the one wall they are. Seen from the east the
+                 * south is on the left, so that one runs the other way. */
+                float xe = (float)(d == 0 ? x : x + 1);
+                float shade = d == 0 ? SHADE_WEST : SHADE_EAST;
+                float zm, yt;
+
+                za = y + k / (float)n + s[ia] / 16.0f;
+                zb = y + (k + 1) / (float)n + s[ib] / 16.0f;
+                zc = y + k / (float)n + os[ic] / 16.0f;
+                zd = y + (k + 1) / (float)n + os[id] / 16.0f;
+                zm = floorf((za + zb + zc + zd) * 0.25f);
+                yt = ceilf(fmaxf(ta, tb) - 0.01f);
+#define WALL_U(z) (d == 0 ? f0 + (f1 - f0) * fminf(1.0f, fmaxf(0.0f, (z) - zm)) \
+                          : f1 - (f1 - f0) * fminf(1.0f, fmaxf(0.0f, (z) - zm)))
+#define WALL_V(h) (g0 + (g1 - g0) * fminf(1.0f, fmaxf(0.0f, yt - (h))))
+                if (d == 0) /* faces west */
+                    VoxelBuilder_Quad(b, &(VoxelVertex){xe, ta, za, WALL_U(za), WALL_V(ta), shade},
+                                      &(VoxelVertex){xe, tb, zb, WALL_U(zb), WALL_V(tb), shade},
+                                      &(VoxelVertex){xe, bb, zd, WALL_U(zd), WALL_V(bb), shade},
+                                      &(VoxelVertex){xe, ba, zc, WALL_U(zc), WALL_V(ba), shade});
+                else        /* faces east */
+                    VoxelBuilder_Quad(b, &(VoxelVertex){xe, tb, zb, WALL_U(zb), WALL_V(tb), shade},
+                                      &(VoxelVertex){xe, ta, za, WALL_U(za), WALL_V(ta), shade},
+                                      &(VoxelVertex){xe, ba, zc, WALL_U(zc), WALL_V(ba), shade},
+                                      &(VoxelVertex){xe, bb, zd, WALL_U(zd), WALL_V(bb), shade});
+#undef WALL_U
+#undef WALL_V
             }
             else
             {
@@ -953,7 +996,7 @@ int VoxelMesh_DraftSlot(const VoxelMapInstance *inst, const struct VoxelAtlasMap
     metatile = VoxelWorld_GetMetatileId(x, y);
     /* The trunk's ground, not the card of the crown drawn over it. */
     if (VoxelWorld_UsesTreeSprites(inst))
-        metatile = VoxelTree_GroundMetatile(metatile);
+        metatile = VoxelTree_GroundMetatile(inst->secondaryTileset, metatile);
     if (metatile < 0 || metatile >= (int)VOXEL_METATILE_REAL)
         return -1;
     slot = atlas->slotOf[metatile];
@@ -995,7 +1038,7 @@ void VoxelMesh_EmitGroundRow(VoxelBuilder *builder, const VoxelMapInstance *inst
 
         /* The tree pass supplies both the trunk's ground and its crown. */
         if (VoxelWorld_UsesTreeSprites(inst)
-         && VoxelTree_Part(VoxelWorld_GetMetatileId(x, y)) >= 0)
+         && VoxelTree_Part(inst->secondaryTileset, VoxelWorld_GetMetatileId(x, y)) >= 0)
             continue;
         if (shape == VOXEL_SHAPE_VOID)
             continue;
@@ -1145,7 +1188,15 @@ void VoxelMesh_EmitGroundRow(VoxelBuilder *builder, const VoxelMapInstance *inst
                              * their grounds on under the same cell */
                             builder->lift = foot - (1.0f + 0.125f * (float)k) / 16.0f;
                             builder->shift = builder->lift;
+                            /* lit as the ground it is seen beside, this
+                             * tile's own at its foot: in full sun it was a
+                             * bright wedge in the shade the rock casts */
                             builder->lightingConstant = 1.0f;
+#if CTR_VOXEL_LIGHTING
+                            if (builder->lighting)
+                                builder->lightingConstant = VoxelLighting_Sample(x + 0.5f, foot + 0.05f,
+                                                                                 y + 0.5f + foot);
+#endif
                             VoxelMesh_Top(builder, (float)nx, (float)ny, 0.0f, -2.0f / 16.0f,
                                           nu0, nv0, nu1, nv1, SHADE_TOP);
                             builder->lightingConstant = -1.0f;
@@ -1308,7 +1359,8 @@ void VoxelMesh_EmitBorder(VoxelBuilder *builder, int x0, int y0, int x1, int y1)
             if (!BorderAt(x, y))
                 continue;
             if (VoxelWorld_UsesTreeSprites(VoxelWorld_Instance(0))
-             && VoxelTree_Part(VoxelWorld_BorderMetatile(x, y)) >= 0)
+             && VoxelTree_Part(VoxelWorld_Instance(0)->secondaryTileset,
+                               VoxelWorld_BorderMetatile(x, y)) >= 0)
                 continue; /* flat trunks and tilted crowns are appended later */
             south = !BorderAt(x, y + 1);
             east = !BorderAt(x + 1, y);

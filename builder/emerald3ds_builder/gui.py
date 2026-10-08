@@ -126,8 +126,8 @@ class App:
             self.payload.check()
             with tempfile.TemporaryDirectory(prefix="emerald3ds-") as tmp:
                 pak_path = Path(tmp) / "emerald3ds.pak"
-                build_pack(rom, self.payload, pak_path, lambda f, m: progress(f * 0.9, m))
-                files = {exe.name: exe for exe in self.payload.executables()}
+                info = build_pack(rom, self.payload, pak_path, lambda f, m: progress(f * 0.9, m))
+                files = {exe.name: exe for exe in info["payload"].executables()}
                 files["emerald3ds.pak"] = pak_path
                 dest = install(sd, files, lambda f: progress(0.9 + 0.1 * f, "Copying to the SD card"))
             self.events.put(("done", str(dest)))

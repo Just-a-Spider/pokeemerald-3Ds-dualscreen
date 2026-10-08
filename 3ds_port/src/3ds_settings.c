@@ -125,10 +125,10 @@ void CtrSettings_Load(void)
         else
         {
             char key[sizeof(sExtra[0].key)];
-            int val;
+            int index;
 
-            if (sscanf(line, "%23[a-z0-9_]=%d", key, &val) == 2 && (val = ExtraIndex(key, true)) >= 0)
-                sExtra[val].value = value;
+            if (sscanf(line, "%23[a-z0-9_]=%d", key, &value) == 2 && (index = ExtraIndex(key, true)) >= 0)
+                sExtra[index].value = value;
         }
     }
     fclose(file);

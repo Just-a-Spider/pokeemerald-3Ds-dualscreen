@@ -83,6 +83,17 @@ class Recipe:
         return cls.from_bytes(Path(path).read_bytes())
 
 
+def recipe_rom_sha1(path: Path) -> str:
+    """The SHA-1 of the ROM a recipe is made from, reading only its header."""
+    with open(path, "rb") as f:
+        head = f.read(12)
+        if head[:8] != MAGIC:
+            raise RecipeError("not a Pokémon Emerald 3Ds Dual Screen recipe")
+        (size,) = struct.unpack_from("<I", head, 8)
+        meta = json.loads(lzma.decompress(f.read(size)))
+    return meta["rom_sha1"]
+
+
 def lz77_decompress(src: bytes, offset: int) -> bytes:
     """GBA BIOS LZ77 (type 0x10)."""
     if src[offset] != 0x10:

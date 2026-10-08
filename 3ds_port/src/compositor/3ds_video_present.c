@@ -844,6 +844,7 @@ void CtrVideo_Present(void)
     if (bottom) BottomTransfer();
     PORT_PROF_END(draw, PORT_PROF_DRAW);
     PORT_PROF_BEGIN(frameEnd);
+    GpuFinishEarly();
     C3D_FrameEnd(0);
     PORT_PROF_END(frameEnd, PORT_PROF_FRAMEEND);
     ++sStats.frames;

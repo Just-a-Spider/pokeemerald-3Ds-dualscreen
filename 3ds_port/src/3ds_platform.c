@@ -58,7 +58,10 @@ uint64_t CtrPlatform_FrameCount(void)
 const CtrTiming *CtrPlatform_GetTiming(void) { return &sTiming; }
 void CtrPlatform_NoteBottom(float ms) { sTiming.bottomMs = ms; }
 
+#include <time.h>
+
 static bool sFastForward = false;
+static int sClockOffset = 0;
 
 bool CtrPlatform_GetFastForward(void)
 {
@@ -68,6 +71,32 @@ bool CtrPlatform_GetFastForward(void)
 void CtrPlatform_SetFastForward(bool on)
 {
     sFastForward = on;
+}
+
+float CtrPlatform_GetDayTime(void)
+{
+    time_t now = time(NULL) + sClockOffset;
+    struct tm value;
+    if (localtime_r(&now, &value))
+        return (float)value.tm_hour + (float)value.tm_min / 60.0f + (float)value.tm_sec / 3600.0f;
+    return 12.0f;
+}
+
+void CtrPlatform_AddTimeOffset(int seconds)
+{
+    sClockOffset += seconds;
+    while (sClockOffset >= 86400) sClockOffset -= 86400;
+    while (sClockOffset <= -86400) sClockOffset += 86400;
+}
+
+void CtrPlatform_SetTimeOffset(int seconds)
+{
+    sClockOffset = seconds;
+}
+
+int CtrPlatform_GetTimeOffset(void)
+{
+    return sClockOffset;
 }
 
 bool CtrPlatform_Init(void)
@@ -135,7 +164,22 @@ bool CtrPlatform_StartThread(void (*entry)(void *), void *arg, unsigned stack, i
     s32 priority = 0x30;
 
     svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
-    return threadCreate(entry, arg, stack, priority < 0x3F ? priority + 1 : 0x3F, core, true) != NULL;
+    priority = priority < 0x3F ? priority + 1 : 0x3F;
+    /* The system core needs a share of it for the application first; one
+     * already asked for (the sound engine's, the voxel streams') is kept. */
+    if (core == 1)
+    {
+        u32 limit = 0;
+
+        if ((R_SUCCEEDED(APT_GetAppCpuTimeLimit(&limit)) && limit >= 30)
+            || R_SUCCEEDED(APT_SetAppCpuTimeLimit(30)))
+        {
+            if (threadCreate(entry, arg, stack, priority, 1, true) != NULL)
+                return true;
+        }
+        core = -2;
+    }
+    return threadCreate(entry, arg, stack, priority, core, true) != NULL;
 }
 
 void CtrPlatform_SleepUs(unsigned microseconds)
@@ -154,8 +198,10 @@ bool CtrPlatform_BeginFrame(void)
     CtrInput_Scan();
     const CtrInput *input = CtrInput_Get();
     /* Leave START and SELECT individually available to ReadKeys. Only the
-     * deliberate one-second chord exits the game. */
-    if ((input->physicalHeld & (CTR_KEY_START | CTR_KEY_SELECT)) == (CTR_KEY_START | CTR_KEY_SELECT))
+     * deliberate one-second chord exits the game; with A and B as well it is
+     * the game's soft reset, which may be held longer. */
+    if ((input->physicalHeld & (CTR_KEY_START | CTR_KEY_SELECT | CTR_KEY_A | CTR_KEY_B))
+        == (CTR_KEY_START | CTR_KEY_SELECT))
     {
         if (!sExitStart) sExitStart = CtrPlatform_Milliseconds();
         if (CtrPlatform_Milliseconds() - sExitStart >= 1000)
@@ -167,38 +213,6 @@ bool CtrPlatform_BeginFrame(void)
     else sExitStart = 0;
     if (input->resetDown)
         CtrPlatform_RequestReset();
-
-    /* Fast-Forward toggle: R + START */
-    if (((input->physicalDown & CTR_KEY_START) && (input->physicalHeld & CTR_KEY_R))
-     || ((input->physicalDown & CTR_KEY_R) && (input->physicalHeld & CTR_KEY_START)))
-    {
-        CtrSettings_StepSpeed(CtrSettings_Speed() > 1 ? -3 : 3, false);
-        CtrLog_Write(CTR_LOG_INPUT, "HOTKEY R+START: speed -> %d", CtrSettings_Speed());
-        CtrInput_Mask(CTR_KEY_START);
-    }
-
-    if (input->physicalDown & CTR_KEY_Y)
-    {
-        if (input->physicalHeld & CTR_KEY_L)
-        {
-            CtrSettings_SetShowFps(!CtrSettings_ShowFps());
-            CtrLog_Write(CTR_LOG_INPUT, "HOTKEY L+Y: toggle HUD -> %d", CtrSettings_ShowFps());
-        }
-        else if (input->physicalHeld & CTR_KEY_R)
-        {
-#if CTR_VOXEL_ENABLED
-            CtrSettings_SetVoxelStereo(!CtrSettings_VoxelStereo());
-            CtrLog_Write(CTR_LOG_INPUT, "HOTKEY R+Y: toggle VOXEL STEREO -> %d", CtrSettings_VoxelStereo());
-#endif
-        }
-        else
-        {
-#if CTR_VOXEL_ENABLED
-            CtrSettings_SetVoxel(!CtrSettings_Voxel());
-            CtrLog_Write(CTR_LOG_INPUT, "HOTKEY Y: toggle VOXEL -> %d", CtrSettings_Voxel());
-#endif
-        }
-    }
     if (sReset)
     {
         sReset = false;

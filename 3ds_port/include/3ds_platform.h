@@ -49,7 +49,8 @@ void CtrPlatform_ReportMemory(const char *stage);
 /*
  * Threads and locks for the port's own workers, usable from game translation
  * units. A CtrLock is a libctru LightLock. A thread is started detached, one
- * priority step below the caller, on core (-2: the application's default).
+ * priority step below the caller, on core (-2: the application's default;
+ * 1: the system core, asking for its share first, or the default if refused).
  */
 typedef int32_t CtrLock;
 void CtrLock_Init(CtrLock *lock);
@@ -112,6 +113,7 @@ bool CtrPlatform_GetFastForward(void);
 void CtrPlatform_SetFastForward(bool on);
 
 void CtrGame_Init(void);
+void CtrGame_SoftReset(void);
 void CtrGame_Frame(void);
 void CtrGame_VBlank(void);
 uint32_t CtrGame_Frames(void);

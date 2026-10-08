@@ -594,8 +594,8 @@ VoxelVisualShape VoxelWorld_ClassifyTile(int worldX, int worldY)
 
     metatileId = VoxelWorld_GetMetatileId(worldX, worldY);
     if (VoxelWorld_UsesTreeSprites(inst)
-     && (VoxelTree_Part(metatileId) >= 0
-         || VoxelTree_GroundMetatile(metatileId) != metatileId))
+     && (VoxelTree_Part(inst->secondaryTileset, metatileId) >= 0
+         || VoxelTree_GroundMetatile(inst->secondaryTileset, metatileId) != metatileId))
         return VOXEL_SHAPE_FLAT;
     if (VoxelRegions_RoleAt((unsigned)inst->layoutId,
                             worldX - inst->originX, worldY - inst->originY)
@@ -616,25 +616,13 @@ VoxelVisualShape VoxelWorld_ClassifyTile(int worldX, int worldY)
 
         /*
          * Beds, tables and rugs announce nothing at all: Emerald gives them no
-         * behaviour of their own. These are ids from the general indoor
-         * tileset, and only for it: in the Pokemon Center's the same ids are
-         * its floor emblem, and read as tables, a bed and a cupboard they
-         * stood up out of its floor.
+         * behaviour of their own, and they are not guessed from their ids.
+         * The reference's list for the general indoor tileset names other
+         * things in it: a rug's border stood up as a row of black television
+         * sets and a bed (House1), the back wall's top row as mats, and a
+         * table as two of its four cells. A room's furniture stands up when
+         * the room is modelled from its drawing (voxel_building.h).
          */
-        if (inst->secondaryTileset != &gTileset_GenericBuilding)
-            return VOXEL_SHAPE_FLAT;
-        if (metatileId == 576 || metatileId == 577 || metatileId == 584
-         || metatileId == 585 || metatileId == 586)
-            return VOXEL_SHAPE_TABLE;
-        if (metatileId == 565 || metatileId == 558 || metatileId == 566
-         || metatileId == 570)
-            return VOXEL_SHAPE_FURNITURE;
-        if (metatileId == 578)
-            return VOXEL_SHAPE_SIGN;
-        if (metatileId >= 514 && metatileId <= 517)
-            return VOXEL_SHAPE_DECAL;
-        if (metatileId == 567 || metatileId == 568 || metatileId == 575)
-            return VOXEL_SHAPE_BED;
     }
 
     return VOXEL_SHAPE_FLAT;
@@ -883,8 +871,11 @@ void VoxelWorld_MarkUsedMetatiles(const void *primaryTileset, const void *second
      * their bare ground tile. Keep that material available in the atlas. */
     if (primaryTileset == &gTileset_General)
         for (int m = 0; m < NUM_METATILES_TOTAL; ++m)
-            if (used[m] > used[VoxelTree_GroundMetatile(m)])
-                used[VoxelTree_GroundMetatile(m)] = used[m];
+        {
+            int ground = VoxelTree_GroundMetatile(secondaryTileset, m);
+            if (used[m] > used[ground])
+                used[ground] = used[m];
+        }
 }
 
 /*

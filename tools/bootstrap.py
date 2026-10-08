@@ -4,6 +4,7 @@
     python tools/bootstrap.py                 # -> build/upstream
     python tools/bootstrap.py --make -j8      # and build the 3DSX there
     python tools/bootstrap.py --clean         # start again from the pinned commit
+    python tools/bootstrap.py --make --spanish-rom esmeralda.gba   # Spanish (BPES) build
 
 1. Reads upstream.lock and fetches exactly that commit of pret/pokeemerald into
    build/upstream (a shallow fetch of one commit).
@@ -15,6 +16,9 @@
    includes (`make generated`) and the 3DSX (`make -C 3ds_port`). Run it from
    a shell where devkitPro, a host compiler and Python are available (on
    Windows, devkitPro's MSYS2 shell with MinGW64 on PATH).
+5. With --spanish-rom: after the generated includes, tools/localize_spanish.py
+   stages the Spanish texts and graphics from the player's clean BPES ROM
+   (docs/SPANISH.md). Switching language back and forth resets the tree.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dir", type=Path, default=ROOT / "build" / "upstream")
     ap.add_argument("--clean", action="store_true", help="reset the tree to the pinned commit first")
+    ap.add_argument("--spanish-rom", type=Path, help="stage the Spanish data from a clean BPES ROM")
     ap.add_argument("--make", action="store_true", help="build the tools and the 3DSX afterwards")
     ap.add_argument("-j", "--jobs", type=int, default=4)
     ap.add_argument("--python", default=sys.executable, help="Python the build calls (PYTHON=)")
@@ -65,6 +70,7 @@ def main() -> int:
     lock = tomllib.loads((ROOT / "upstream.lock").read_text(encoding="utf-8"))
     repo, commit = lock["pokeemerald"]["repository"], lock["pokeemerald"]["commit"]
     tree = args.dir.resolve()
+    previous_locale = (tree / ".emerald3ds-locale").exists()
     patches = sorted((ROOT / "patches" / "pokeemerald").glob("*.patch"))
     marker = tree / ".emerald3ds-patches"
     digest = patch_digest(patches)
@@ -74,10 +80,29 @@ def main() -> int:
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tree, capture_output=True,
                               text=True).stdout.strip()
     stale = not marker.exists() or marker.read_text().strip() != digest
-    if args.clean or head != commit or stale:
+    if args.clean or args.spanish_rom or previous_locale or head != commit or stale:
         if head != commit:
             fetch(tree, repo, commit)
         run(["git", "reset", "-q", "--hard", commit], cwd=tree)
+        (tree / ".emerald3ds-locale").unlink(missing_ok=True)
+        if args.spanish_rom or previous_locale:
+            # Objects and staged data of the other language must not be
+            # reused: rebuild every native object when the language changes.
+            shutil.rmtree(tree / "3ds_port/build", ignore_errors=True)
+            shutil.rmtree(tree / "3ds_port/romfs", ignore_errors=True)
+            (tree / "src/data/region_map/region_map_entries.h").unlink(missing_ok=True)
+        if previous_locale:
+            import gzip
+            import json
+            manifest = json.loads(gzip.decompress((ROOT / "tools/locales/spanish.json.gz").read_bytes()))
+            for relative, _, _ in manifest["graphics"]:
+                for name in (relative, relative[:-3]) if relative.endswith(".lz") else (relative,):
+                    # Tracked art was restored by the reset; generated locale
+                    # art must be regenerated from the pinned source PNGs.
+                    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", name],
+                                             cwd=tree, capture_output=True).returncode == 0
+                    if not tracked:
+                        (tree / name).unlink(missing_ok=True)
         if args.clean:
             run(["git", "clean", "-q", "-fdx"], cwd=tree)
         # Files a previous patch set created are untracked after the reset;
@@ -104,9 +129,13 @@ def main() -> int:
     shutil.copy2(ROOT / "upstream.lock", tree / "upstream.lock")
     print("bootstrap: tree ready at %s" % tree)
 
-    if args.make:
+    if args.make or args.spanish_rom:
         run(["make", "tools", "-j%d" % args.jobs], cwd=tree)
         run(["make", "generated", "-j%d" % args.jobs], cwd=tree)
+    if args.spanish_rom:
+        run([args.python, ROOT / "tools/localize_spanish.py", "--tree", tree,
+             "--rom", args.spanish_rom.resolve()])
+    if args.make:
         run(["make", "-C", "3ds_port", "-j%d" % args.jobs, "PYTHON=%s" % args.python], cwd=tree)
     return 0
 

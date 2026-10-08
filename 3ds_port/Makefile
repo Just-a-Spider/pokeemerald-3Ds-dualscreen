@@ -15,6 +15,10 @@ CFLAGS := $(ARCH) -O2 -g -std=gnu99 -Wall -Wextra -Werror -ffunction-sections -f
 LDFLAGS := $(ARCH) -L$(CTRULIB)/lib
 # Observe the public GX queue for upload admission; never start it early.
 LDFLAGS += -Wl,--wrap=GX_BindQueue
+# The GPU started early in a frame (3ds_video.c GpuStartEarly) flushes first.
+LDFLAGS += -Wl,--wrap=GX_ProcessCommandList -Wl,--wrap=GX_TextureCopy -Wl,--wrap=GX_DisplayTransfer -Wl,--wrap=GX_RequestDma
+# Cache flushes made by the kernel call itself, not through the GSP service (3ds_video.c).
+LDFLAGS += -Wl,--wrap=GSPGPU_FlushDataCache
 LIBS := -lctru -lm
 TARGET := emerald3ds
 APP_TITLE := Pokemon Emerald 3Ds Dual Screen
@@ -22,6 +26,9 @@ APP_TITLE := Pokemon Emerald 3Ds Dual Screen
 APP_FILE := Emerald3DS
 APP_DESCRIPTION := Dual-screen port for Nintendo 3DS
 APP_AUTHOR := ZallaxDev
+# The release this build is, shown under the title screen (3ds_bottom_ui.c);
+# tools/build_release.py refuses a --version that differs.
+APP_VERSION := 0.3.0
 # 1: this 3DSX carries its game data in its own RomFS (development builds).
 # The release target always builds an executable without it.
 EMBED_DATA ?= 1

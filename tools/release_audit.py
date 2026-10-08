@@ -81,7 +81,8 @@ SECRETS = [
 ]
 GBA_LOGO_PREFIX = bytes.fromhex("24FFAE51699AA2213D84820A84E409AD")
 PAK_MAGIC = b"EM3DPAK\0"
-KNOWN_ROM_SHA1 = {"f3ae088181bf583e55daf962a92bb46f4f1d07b7"}
+KNOWN_ROM_SHA1 = {"f3ae088181bf583e55daf962a92bb46f4f1d07b7",
+                  "fe1558a3dcb0360ab558969e09b690888b846dd9"}
 
 
 @dataclass
@@ -133,6 +134,10 @@ class RomIndex:
 
     @staticmethod
     def interesting(window: bytes) -> bool:
+        # A byte ramp (0x00, 0x01, 0x02...) is a counting table that any
+        # program may hold (the builder's C runtime does), not game content.
+        if all((b - a) & 0xFF == 1 for a, b in zip(window, window[1:])):
+            return False
         return len(set(window)) >= 10
 
     def copied_bytes(self, data: bytes) -> int:

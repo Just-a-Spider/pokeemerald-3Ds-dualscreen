@@ -83,89 +83,63 @@ void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ
 
     if (in != NULL)
     {
-        if (in->physicalDown & CTR_KEY_X)
+        /* Old 3DS: Hold L for Camera cardinal snaps and Fast-Forward step */
+        if (in->physicalHeld & CTR_KEY_L)
         {
-            sRotatedWithStick = false;
-        }
-
-        if (in->physicalHeld & CTR_KEY_X)
-        {
-            /* Direct cardinal snaps via D-Pad */
             if (in->physicalDown & CTR_KEY_UP)
             {
                 sTargetYaw = 0.0f; /* North */
                 sSnapping = true;
                 sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
             }
             else if (in->physicalDown & CTR_KEY_RIGHT)
             {
                 sTargetYaw = 90.0f; /* East */
                 sSnapping = true;
                 sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
             }
             else if (in->physicalDown & CTR_KEY_DOWN)
             {
                 sTargetYaw = 180.0f; /* South */
                 sSnapping = true;
                 sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
             }
             else if (in->physicalDown & CTR_KEY_LEFT)
             {
                 sTargetYaw = -90.0f; /* West */
                 sSnapping = true;
                 sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
             }
 
-            /* Step rotation via Shoulder L/R triggers */
-            if (in->physicalDown & CTR_KEY_L)
+            /* Old 3DS: L + R cycles Fast-Forward speed (1x -> 2x -> 3x -> 4x -> 1x) */
+            if (in->physicalDown & CTR_KEY_R)
             {
-                sTargetYaw = roundf((cam->yaw - 90.0f) / 90.0f) * 90.0f;
-                sSnapping = true;
-                sRotatedWithStick = true;
+                CtrSettings_StepSpeed(1, true);
+                CtrInput_Mask(CTR_KEY_R | CTR_KEY_L);
             }
-            else if (in->physicalDown & CTR_KEY_R)
-            {
-                sTargetYaw = roundf((cam->yaw + 90.0f) / 90.0f) * 90.0f;
-                sSnapping = true;
-                sRotatedWithStick = true;
-            }
+        }
 
-            /* Live time scrub controls while holding X:
-             * Hold X + D-Pad Up: advance time +1 hour
-             * Hold X + D-Pad Down: decrease time -1 hour
-             * Hold X + SELECT: reset time to real RTC */
-            if (in->physicalDown & CTR_KEY_UP)
+        /* Hold SELECT + D-Pad Left/Right for RTC scrubbing on Old 3DS */
+        if ((in->physicalHeld & CTR_KEY_SELECT) && !(in->physicalHeld & (CTR_KEY_A | CTR_KEY_B)))
+        {
+            if (in->physicalDown & CTR_KEY_RIGHT)
             {
                 CtrPlatform_AddTimeOffset(3600);
-                sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_SELECT);
             }
-            else if (in->physicalDown & CTR_KEY_DOWN)
+            else if (in->physicalDown & CTR_KEY_LEFT)
             {
                 CtrPlatform_AddTimeOffset(-3600);
-                sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_SELECT);
             }
-            else if (in->physicalDown & CTR_KEY_SELECT)
+            else if (in->physicalDown & CTR_KEY_START)
             {
                 CtrPlatform_SetTimeOffset(0);
-                sRotatedWithStick = true;
-            }
-
-            /* Free camera rotation via Circle Pad */
-            if (abs(in->circleX) > 20)
-            {
-                sSnapping = false;
-                cam->yaw += (float)in->circleX * 0.015f;
-                sRotatedWithStick = true;
-                while (cam->yaw > 180.0f) cam->yaw -= 360.0f;
-                while (cam->yaw < -180.0f) cam->yaw += 360.0f;
-                sTargetYaw = cam->yaw;
-            }
-            if (abs(in->circleY) > 25)
-            {
-                cam->pitch += (float)in->circleY * 0.008f;
-                if (cam->pitch < 20.0f) cam->pitch = 20.0f;
-                if (cam->pitch > 60.0f) cam->pitch = 60.0f;
-                sRotatedWithStick = true;
+                CtrInput_Mask(CTR_KEY_START | CTR_KEY_SELECT);
             }
         }
         else
@@ -178,9 +152,9 @@ void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ
                 cam->pitch = (float)curPitchSetting;
             }
 
-            if (in->physicalUp & CTR_KEY_X)
+            if (in->physicalUp & CTR_KEY_L)
             {
-                /* Quick tap of X without rotating stick resets camera back to default */
+                /* Quick tap of L without pressing D-Pad resets camera back to North default */
                 if (!sRotatedWithStick)
                 {
                     sTargetYaw = 0.0f;

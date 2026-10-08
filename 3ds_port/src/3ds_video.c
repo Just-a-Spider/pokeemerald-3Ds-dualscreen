@@ -24,6 +24,147 @@ void __wrap_GX_BindQueue(gxCmdQueue_s *queue)
     __real_GX_BindQueue(queue);
 }
 
+extern u32 __ctru_linear_heap, __ctru_linear_heap_size;
+static bool sGpuEarly;
+static uint64_t sGpuEarlyStart;
+
+static uint64_t sFlushTicks;
+static unsigned sFlushes;
+
+/*
+ * Every data cache flush - ours, Citro3D's at FrameEnd, the voxel uploads' -
+ * goes through GSPGPU_FlushDataCache, a request to the GSP service, which
+ * runs on the system core and makes the same kernel call for this process.
+ * The request is a round trip to the other core per flush (0.6 ms each for
+ * the whole heap on an Old 3DS, three a frame with the GPU started early).
+ * The kernel call made here does the same work, clean and invalidate, with
+ * no service in between. Should the kernel refuse it, the service is used
+ * from then on. For the whole heap the two are timed against each other over
+ * the first FLUSH_TRIAL flushes of each and the faster kept, logged once.
+ */
+Result __real_GSPGPU_FlushDataCache(const void *adr, u32 size);
+static int sFlushDirect = 1;        /* 0: the kernel refused the call */
+static int sFlushChoice = -1;       /* whole heap: -1 still timing, 0 service, 1 direct */
+static uint64_t sFlushTrial[2];
+static unsigned sFlushTrials[2];
+#define FLUSH_TRIAL 120u
+#define FLUSH_LARGE (1u << 20)
+
+static Result FlushDirect(const void *adr, u32 size)
+{
+    Result rc = svcFlushProcessDataCache(CUR_PROCESS_HANDLE, (u32)adr, size);
+
+    if (R_FAILED(rc))
+    {
+        sFlushDirect = 0;
+        CtrLog_Write(CTR_LOG_VIDEO, "cache flush: kernel call refused (%08lx), GSP service used",
+                     (unsigned long)rc);
+        return __real_GSPGPU_FlushDataCache(adr, size);
+    }
+    return rc;
+}
+
+Result __wrap_GSPGPU_FlushDataCache(const void *adr, u32 size)
+{
+    uint64_t start;
+    Result rc;
+    int way;
+
+    if (sFlushDirect == 0)
+        return __real_GSPGPU_FlushDataCache(adr, size);
+    if (size < FLUSH_LARGE)
+        return FlushDirect(adr, size);
+    way = sFlushChoice >= 0 ? sFlushChoice : (int)((sFlushTrials[0] + sFlushTrials[1]) & 1);
+    start = svcGetSystemTick();
+    rc = way ? FlushDirect(adr, size) : __real_GSPGPU_FlushDataCache(adr, size);
+    if (sFlushChoice < 0 && sFlushDirect != 0)
+    {
+        sFlushTrial[way] += svcGetSystemTick() - start;
+        if (++sFlushTrials[way] >= FLUSH_TRIAL && sFlushTrials[!way] >= FLUSH_TRIAL)
+        {
+            float service = sFlushTrial[0] * 1000.0f / SYSCLOCK_ARM11 / sFlushTrials[0];
+            float direct = sFlushTrial[1] * 1000.0f / SYSCLOCK_ARM11 / sFlushTrials[1];
+
+            sFlushChoice = direct <= service;
+            CtrLog_Write(CTR_LOG_VIDEO, "cache flush of the heap: GSP service %.3f ms, kernel call %.3f ms; "
+                         "%s kept", service, direct, sFlushChoice ? "kernel call" : "GSP service");
+        }
+    }
+    return rc;
+}
+
+static void FlushLinear(void)
+{
+    uint64_t start = svcGetSystemTick();
+
+    GSPGPU_FlushDataCache((void *)__ctru_linear_heap, __ctru_linear_heap_size);
+    sFlushTicks += svcGetSystemTick() - start;
+    ++sFlushes;
+}
+
+Result __real_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags);
+Result __wrap_GX_ProcessCommandList(u32 *buf0a, u32 buf0s, u8 flags)
+{
+    if (sGpuEarly) FlushLinear();
+    return __real_GX_ProcessCommandList(buf0a, buf0s, flags);
+}
+
+Result __real_GX_TextureCopy(u32 *inadr, u32 indim, u32 *outadr, u32 outdim, u32 size, u32 flags);
+Result __wrap_GX_TextureCopy(u32 *inadr, u32 indim, u32 *outadr, u32 outdim, u32 size, u32 flags)
+{
+    if (sGpuEarly) FlushLinear();
+    return __real_GX_TextureCopy(inadr, indim, outadr, outdim, size, flags);
+}
+
+Result __real_GX_DisplayTransfer(u32 *inadr, u32 indim, u32 *outadr, u32 outdim, u32 flags);
+Result __wrap_GX_DisplayTransfer(u32 *inadr, u32 indim, u32 *outadr, u32 outdim, u32 flags)
+{
+    /* Screens and render targets: VRAM the GPU wrote, nothing to flush. */
+    return __real_GX_DisplayTransfer(inadr, indim, outadr, outdim, flags);
+}
+
+Result __real_GX_RequestDma(u32 *src, u32 *dst, u32 length);
+Result __wrap_GX_RequestDma(u32 *src, u32 *dst, u32 length)
+{
+    if (sGpuEarly) FlushLinear();
+    return __real_GX_RequestDma(src, dst, length);
+}
+
+/* In the frame: queue what is recorded so far and start the GPU on it. */
+#ifndef CTR_GPU_EARLY
+#define CTR_GPU_EARLY 1
+#endif
+/* Measured on an Old 3DS by turning it off every other 600 frames: the
+ * voxel battle 59.8 fps with it, 48-52 without; the 2D battle no worse. */
+static bool GpuEarlyThisFrame(void)
+{
+    return CTR_GPU_EARLY;
+}
+
+static void GpuStartEarly(void)
+{
+    if (!GpuEarlyThisFrame() || sGpuEarly || sFrameQueue == NULL) return;
+    C2D_Flush();
+    C3D_FrameSplit(0);
+    FlushLinear();
+    sGpuEarly = true;
+    sGpuEarlyStart = svcGetSystemTick();
+    gxCmdQueueRun(sFrameQueue);
+}
+
+static bool GpuFinishEarly(void)
+{
+    if (!sGpuEarly) return false;
+    (void)sGpuEarlyStart;
+    if (sFrameQueue->lastEntry == sFrameQueue->numEntries)
+    {
+        gxCmdQueueStop(sFrameQueue);
+        sGpuEarly = false;
+        return false;
+    }
+    return true;
+}
+
 bool CtrVideo_TryVoxelUpload(void)
 {
     if (sFrameQueue == NULL)
@@ -4596,6 +4737,31 @@ void CtrVideo_SetLineScroll(unsigned reg, bool wide, const void *values, unsigne
             sLineScroll[reg / 2 + r][y] = source[(y ? y - 1 : 0) * regs + r];
     sLineMask = ((1u << regs) - 1) << (reg / 2);
     sLineCount = lines;
+}
+
+static struct
+{
+    bool on;
+    int x, y, radius;
+    float shown, burst;
+    uint32_t ticks;
+} sFieldLight;
+
+void CtrVideo_SetFieldLight(bool on, int x, int y, int radius)
+{
+    if (on && (!sFieldLight.on || sFieldLight.radius < 0))
+        sFieldLight.shown = (float)radius;
+    else if (on && radius > sFieldLight.radius && sFieldLight.shown < radius - 6.0f)
+        sFieldLight.burst = 1.0f;
+    sFieldLight.on = on;
+    if (!on) { sFieldLight.burst = 0.0f; return; }
+    sFieldLight.x = x;
+    sFieldLight.y = y;
+    sFieldLight.radius = radius;
+    ++sFieldLight.ticks;
+    sFieldLight.shown += ((float)radius - sFieldLight.shown) * 0.25f;
+    if (radius > sFieldLight.shown - 0.5f && radius < sFieldLight.shown + 0.5f) sFieldLight.shown = (float)radius;
+    sFieldLight.burst *= 0.955f;
 }
 
 void CtrVideo_Shutdown(void)

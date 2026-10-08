@@ -46,6 +46,7 @@ typedef struct
 typedef struct
 {
     u8 mode, screen, pressed, gender, inBattle;
+    u8 title;                         /* MODE_OFF on the title screen */
     u8 enabled;                       /* bit per column screen */
     /* Party. */
     s8 partyCursor;
@@ -926,7 +927,10 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     s->partyCursor = -1;
     s->pickMapsec = MAPSEC_NONE;
     if (s->mode == MODE_OFF)
+    {
+        s->title = CtrTitleScreen_RayquazaBg() >= 0;
         return;
+    }
     s->gender = gSaveBlock2Ptr->playerGender ? FEMALE : MALE;
     s->inBattle = gMain.inBattle;
     s->enabled = EnabledScreens();

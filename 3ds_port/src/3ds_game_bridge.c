@@ -6,7 +6,6 @@
 #include "siirtc.h"
 #include "gba/flash_internal.h"
 
-static time_t sClockOffset;
 static u8 sRtcStatus = SIIRTCINFO_24HOUR;
 
 void CtrEmu_Reset(void)
@@ -54,10 +53,11 @@ u16 Platform_GetKeyInput(void)
 /* AgbMain owns the loop: this is the game's frame boundary. */
 void CtrGame_WaitFrame(void);
 void VBlankIntrWait(void) { CtrGame_WaitFrame(); }
+/* At once, as on the GBA: DoSoftReset expects SoftReset not to return. */
 void SoftReset(u32 flags)
 {
     (void)flags;
-    CtrPlatform_RequestReset();
+    CtrGame_SoftReset();
 }
 
 static u8 Bcd(unsigned value) { return ((value / 10) << 4) | (value % 10); }
@@ -66,35 +66,9 @@ static unsigned FromBcd(u8 value) { return (value >> 4) * 10 + (value & 15); }
 void Platform_GetStatus(struct SiiRtcInfo *rtc) { rtc->status = sRtcStatus; }
 void Platform_SetStatus(struct SiiRtcInfo *rtc) { sRtcStatus = rtc->status; }
 
-float CtrPlatform_GetDayTime(void)
-{
-    time_t now = time(NULL) + sClockOffset;
-    struct tm value;
-    if (localtime_r(&now, &value))
-        return (float)value.tm_hour + (float)value.tm_min / 60.0f + (float)value.tm_sec / 3600.0f;
-    return 12.0f;
-}
-
-void CtrPlatform_AddTimeOffset(int seconds)
-{
-    sClockOffset += seconds;
-    while (sClockOffset >= 86400) sClockOffset -= 86400;
-    while (sClockOffset <= -86400) sClockOffset += 86400;
-}
-
-void CtrPlatform_SetTimeOffset(int seconds)
-{
-    sClockOffset = seconds;
-}
-
-int CtrPlatform_GetTimeOffset(void)
-{
-    return sClockOffset;
-}
-
 void Platform_GetDateTime(struct SiiRtcInfo *rtc)
 {
-    time_t now = time(NULL) + sClockOffset;
+    time_t now = time(NULL) + CtrPlatform_GetTimeOffset();
     struct tm value;
     if (!localtime_r(&now, &value))
         CtrPlatform_Fatal("RTC conversion failed");
@@ -122,7 +96,7 @@ void Platform_SetDateTime(struct SiiRtcInfo *rtc)
     time_t requested = mktime(&value);
     if (requested == (time_t)-1)
         CtrPlatform_Fatal("invalid logical RTC date");
-    sClockOffset = requested - time(NULL);
+    CtrPlatform_SetTimeOffset(requested - time(NULL));
     CtrLog_Write(CTR_LOG_GAME, "logical RTC updated (session only)");
 }
 
@@ -173,11 +147,11 @@ void Platform_ReadFlash(u16 sector, u32 offset, u8 *dest, u32 size)
     memcpy(dest, FLASH_BASE + address, size);
 }
 
-void Platform_QueueAudio(float *samples, s32 count)
+void Platform_QueueAudio(s32 *samples, s32 count)
 {
     /*
      * m4aSoundVSync hands over one mixer frame per VBlank, measured in bytes
-     * because SDL's queue is. Four bytes per float, two floats per frame.
+     * because SDL's queue is. Four bytes per sample, two samples per frame.
      */
-    CtrAudio_Queue(samples, count / (s32)(2 * sizeof(float)));
+    CtrAudio_Queue(samples, count / (s32)(2 * sizeof(s32)));
 }

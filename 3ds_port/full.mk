@@ -69,6 +69,7 @@ FULL_DATA_OBJS += build/root/3ds_song_blob.o
 BACKEND_SRCS := src/3ds_assets.c src/3ds_map_loader.c src/3ds_compat.c
 BACKEND_SRCS += src/3ds_game_full.c src/3ds_game_bridge.c src/3ds_script_loader.c
 BACKEND_SRCS += src/3ds_bottom_ui.c
+build/bridge/3ds_bottom_ui.o: FULLCFLAGS += -DCTR_APP_VERSION='"$(APP_VERSION)"'
 # The ENHANCEMENTS and CHEATS pages of OPTIONS (include/3ds_extras.h).
 BACKEND_SRCS += src/3ds_extras.c
 # The frame profiler times the engine's own routines through linker wrappers.
@@ -197,7 +198,7 @@ CTR_GBA_BATTLE_SRCS := battle_main battle_bg battle_intro battle_interface battl
 	battle_controller_recorded_opponent battle_controller_recorded_player battle_controller_safari \
 	battle_controller_wally battle_message battle_script_commands battle_util battle_util2 \
 	battle_tv battle_arena battle_palace battle_ai_script_commands battle_ai_switch_items \
-	pokeball reshow_battle_screen \
+	pokeball reshow_battle_screen evolution_scene evolution_graphics \
 	$(patsubst $(ROOT)/src/%.c,%,$(wildcard $(ROOT)/src/battle_anim*.c))
 CTR_GBA_BATTLE_OBJS := $(patsubst %,build/root/src/%.o,$(CTR_GBA_BATTLE_SRCS))
 $(CTR_GBA_BATTLE_OBJS): FULLCFLAGS += -DCTR_GBA_STAGE -include $(abspath compat/ctr_gba_battle.h)
@@ -357,6 +358,21 @@ map-includes:
 
 -include $(BACKEND_OBJS:.o=.d)
 
+# Voxel generators read converted tiles/palettes directly. On a fresh checkout
+# those files do not exist until the asset stage, which runs after the link.
+# Build the shared inputs before any generator (one recursive make, not one
+# process per palette). Include the intro image for the same reason.
+VOXEL_GFX_SOURCES := $(wildcard $(ROOT)/data/tilesets/primary/*/tiles.png $(ROOT)/data/tilesets/secondary/*/tiles.png)
+VOXEL_GFX_SOURCES += $(wildcard $(ROOT)/data/tilesets/primary/*/palettes/*.pal $(ROOT)/data/tilesets/secondary/*/palettes/*.pal)
+VOXEL_GFX_SOURCES += $(wildcard $(ROOT)/graphics/intro/scene_1/bg.png)
+VOXEL_GFX_OUTPUTS := $(patsubst %.png,%.4bpp,$(filter %.png,$(VOXEL_GFX_SOURCES)))
+VOXEL_GFX_OUTPUTS += $(patsubst %.pal,%.gbapal,$(filter %.pal,$(VOXEL_GFX_SOURCES)))
+ifneq ($(strip $(VOXEL_GFX_OUTPUTS)),)
+$(VOXEL_GFX_OUTPUTS) &: $(VOXEL_GFX_SOURCES)
+	+$(MAKE) -C $(ROOT) $(patsubst $(ROOT)/%,%,$(VOXEL_GFX_OUTPUTS))
+romfs/voxel/regions.bin romfs/voxel/signposts.bin romfs/voxel/buildings.bin romfs/voxel/relief.bin romfs/stage/leaves.bin: $(VOXEL_GFX_OUTPUTS)
+endif
+
 ifeq ($(VOXEL),1)
 # What every cell of every layout IS (the console reads its signposts).
 # Solved on the host because it needs the map's warps, its neighbours and a
@@ -376,22 +392,32 @@ romfs/voxel/signposts.bin: scripts/gen_voxel_sign_masks.py scripts/voxel_sign_ma
 
 romfs/voxel/trees.rgba5551: scripts/gen_voxel_trees.py \
 		assets/voxel/trees/tree_crown.png assets/voxel/trees/tree_trunk.png \
-		assets/voxel/trees/tree_small_crown.png assets/voxel/trees/tree_small_trunk.png
+		assets/voxel/trees/tree_small_crown.png assets/voxel/trees/tree_small_trunk.png \
+		assets/voxel/trees/tree_2_small_crown.png assets/voxel/trees/tree_2_small_trunk.png
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_voxel_trees.py --output $@
 
 # Buildings modelled from their own drawing. The generator renders every model
 # in the GBA's projection and refuses to write one that differs from its art
-# by a single pixel, so a spec that stops matching fails the build here.
+# by a single pixel, so a spec that stops matching fails the build here
+# (--verify: the release builder only exports, checked by the CRC of this
+# file). verify-voxel-buildings runs the proofs alone, even when the file is
+# up to date: the release build asks for it.
 romfs/voxel/buildings.bin: scripts/gen_voxel_buildings.py scripts/voxel_building.py \
 		scripts/voxel_building_specs.py scripts/dump_region_art.py scripts/voxel_props.py \
+		scripts/voxel_relief_fixes.py assets/voxel/relief_fixes.json \
 		$(ROOT)/data/layouts/layouts.json
 	@mkdir -p $(@D)
-	"$(PYTHON)" scripts/gen_voxel_buildings.py --output $@
+	"$(PYTHON)" scripts/gen_voxel_buildings.py --verify --output $@
+
+.PHONY: verify-voxel-buildings
+verify-voxel-buildings:
+	"$(PYTHON)" scripts/gen_voxel_buildings.py --verify
 
 # Terrain relief read off the drawing: gen_voxel_relief.py explains it.
 romfs/voxel/relief.bin: scripts/gen_voxel_relief.py scripts/voxel_cells.py scripts/voxel_props.py \
 		scripts/voxel_art.py scripts/voxel_building.py scripts/dump_region_art.py \
+		scripts/voxel_relief_fixes.py scripts/voxel_terraces.py assets/voxel/relief_fixes.json \
 		$(ROOT)/data/layouts/layouts.json
 	@mkdir -p $(@D)
 	"$(PYTHON)" scripts/gen_voxel_relief.py --output $@

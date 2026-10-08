@@ -2,14 +2,34 @@
 #include "voxel_tree.h"
 #include "voxel_relief.h"
 
+struct Tileset;
+extern const struct Tileset gTileset_Dewford;
+
+/* Where gen_voxel_trees.py packs each tree, in texels. */
+#define TEX_U(px) ((float)(px) / VOXEL_TREE_TEXTURE_DIM)
+#define TEX_V(py) (1.0f - (float)(py) / VOXEL_TREE_TEXTURE_DIM)
+
+/* Ids from 0x200 are the secondary tileset's, the same number meaning a
+ * different drawing on every map. */
+#define SECONDARY_ID 0x200
+
 #ifdef VOXEL_HOST_FILES
 static inline int CtrVoxel_GetCameraQuadrant(void) { return 0; }
 #else
 int CtrVoxel_GetCameraQuadrant(void);
 #endif
 
-int VoxelTree_Part(int metatileId)
+int VoxelTree_Part(const void *secondaryTileset, int metatileId)
 {
+    if (metatileId >= SECONDARY_ID)
+    {
+        /* Dewford's small tree: the trunk on the sand (23A), and inside the
+         * wood (243), where the next crown overlaps it. */
+        if (secondaryTileset == &gTileset_Dewford
+         && (metatileId == 0x23A || metatileId == 0x243))
+            return VOXEL_TREE_SMALL;
+        return -1;
+    }
     switch (metatileId)
     {
     case 0x1D4: case 0x1D6: return 0; /* upper left, including forest edge */
@@ -27,8 +47,15 @@ int VoxelTree_Part(int metatileId)
     }
 }
 
-int VoxelTree_GroundMetatile(int metatileId)
+int VoxelTree_GroundMetatile(const void *secondaryTileset, int metatileId)
 {
+    if (metatileId >= SECONDARY_ID)
+    {
+        /* Dewford's crown top over the sand. */
+        if (secondaryTileset == &gTileset_Dewford && metatileId == 0x239)
+            return 0x124;
+        return metatileId;
+    }
     switch (metatileId)
     {
     case 0x1C6: case 0x1C7: return 0x00D; /* tall grass without canopy */
@@ -46,56 +73,65 @@ int VoxelTree_GroundMetatile(int metatileId)
 }
 
 /* The small crown is 16:32: width 1, length 2 tiles, at 50 degrees
- * facing the active camera quadrant, standing on its one-cell trunk. */
-static void EmitSmallCell(VoxelBuilder *builder, int x, int y)
+ * facing the active camera quadrant, standing on its one-cell trunk.
+ * Dewford's own small tree has its art at 64,0, the General one at 32,32. */
+static void EmitSmallCell(VoxelBuilder *builder, int x, int y, bool dewford)
 {
+    int cx = dewford ? 64 : 32, cy = dewford ? 0 : 32;
+    int tx = cx + 16, ty = cy;
     float wx = (float)x, wz = (float)y;
     const float rise = 1.532089f, run = 1.285575f;
     const float baseHeight = -0.10f;
-    float baseZ = wz + 0.825f;
-    float baseX = wx + 0.825f;
+    /* 0.15 further forward than half the large tree's: any less and the
+     * leaves stand through the ground behind the trunk. Dewford's another
+     * 0.15, so its crown stands over the shadow drawn on its sand. */
+    float baseZ = wz + (dewford ? 0.975f : 0.825f);
+    float baseX = wx + (dewford ? 0.975f : 0.825f);
     int q = CtrVoxel_GetCameraQuadrant();
 
+    float u0 = TEX_U(cx), u1 = TEX_U(cx + 16);
+    float v0 = TEX_V(cy), v1 = TEX_V(cy + 32);
+
     VoxelMesh_Top(builder, wx, wz, 0.0f, 0.0f,
-                  48.0f / VOXEL_TREE_TEXTURE_DIM, 0.5f, 1.0f, 0.25f, 1.0f);
+                  TEX_U(tx), TEX_V(ty), TEX_U(tx + 16), TEX_V(ty + 16), 1.0f);
     builder->rounded = true;
 
     if (q == 1) /* East camera looking West */
     {
         VoxelBuilder_Quad(builder,
-            &(VoxelVertex){baseX - run, baseHeight + rise, wz + 1.0f, 0.5f,  0.5f, 1.0f},
-            &(VoxelVertex){baseX - run, baseHeight + rise, wz,        0.75f, 0.5f, 1.0f},
-            &(VoxelVertex){baseX,       baseHeight,        wz,        0.75f, 0.0f, 1.0f},
-            &(VoxelVertex){baseX,       baseHeight,        wz + 1.0f, 0.5f,  0.0f, 1.0f});
+            &(VoxelVertex){baseX - run, baseHeight + rise, wz + 1.0f, u0, v0, 1.0f},
+            &(VoxelVertex){baseX - run, baseHeight + rise, wz,        u1, v0, 1.0f},
+            &(VoxelVertex){baseX,       baseHeight,        wz,        u1, v1, 1.0f},
+            &(VoxelVertex){baseX,       baseHeight,        wz + 1.0f, u0, v1, 1.0f});
     }
     else if (q == 2) /* North camera looking South */
     {
         VoxelBuilder_Quad(builder,
-            &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - 0.65f + run, 0.5f,  0.5f, 1.0f},
-            &(VoxelVertex){wx,        baseHeight + rise, baseZ - 0.65f + run, 0.75f, 0.5f, 1.0f},
-            &(VoxelVertex){wx,        baseHeight,        baseZ - 0.65f,       0.75f, 0.0f, 1.0f},
-            &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ - 0.65f,       0.5f,  0.0f, 1.0f});
+            &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - 0.65f + run, u0, v0, 1.0f},
+            &(VoxelVertex){wx,        baseHeight + rise, baseZ - 0.65f + run, u1, v0, 1.0f},
+            &(VoxelVertex){wx,        baseHeight,        baseZ - 0.65f,       u1, v1, 1.0f},
+            &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ - 0.65f,       u0, v1, 1.0f});
     }
     else if (q == 3) /* West camera looking East */
     {
         VoxelBuilder_Quad(builder,
-            &(VoxelVertex){baseX - 0.65f + run, baseHeight + rise, wz,        0.5f,  0.5f, 1.0f},
-            &(VoxelVertex){baseX - 0.65f + run, baseHeight + rise, wz + 1.0f, 0.75f, 0.5f, 1.0f},
-            &(VoxelVertex){baseX - 0.65f,       baseHeight,        wz + 1.0f, 0.75f, 0.0f, 1.0f},
-            &(VoxelVertex){baseX - 0.65f,       baseHeight,        wz,        0.5f,  0.0f, 1.0f});
+            &(VoxelVertex){baseX - 0.65f + run, baseHeight + rise, wz,        u0, v0, 1.0f},
+            &(VoxelVertex){baseX - 0.65f + run, baseHeight + rise, wz + 1.0f, u1, v0, 1.0f},
+            &(VoxelVertex){baseX - 0.65f,       baseHeight,        wz + 1.0f, u1, v1, 1.0f},
+            &(VoxelVertex){baseX - 0.65f,       baseHeight,        wz,        u0, v1, 1.0f});
     }
     else /* q == 0: Default South camera looking North */
     {
         VoxelBuilder_Quad(builder,
-            &(VoxelVertex){wx,        baseHeight + rise, baseZ - run, 0.5f,  0.5f, 1.0f},
-            &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - run, 0.75f, 0.5f, 1.0f},
-            &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ,       0.75f, 0.0f, 1.0f},
-            &(VoxelVertex){wx,        baseHeight,        baseZ,       0.5f,  0.0f, 1.0f});
+            &(VoxelVertex){wx,        baseHeight + rise, baseZ - run, u0, v0, 1.0f},
+            &(VoxelVertex){wx + 1.0f, baseHeight + rise, baseZ - run, u1, v0, 1.0f},
+            &(VoxelVertex){wx + 1.0f, baseHeight,        baseZ,       u1, v1, 1.0f},
+            &(VoxelVertex){wx,        baseHeight,        baseZ,       u0, v1, 1.0f});
     }
     builder->rounded = false;
 }
 
-static void EmitCell(VoxelBuilder *builder, int x, int y, int part)
+static void EmitCell(VoxelBuilder *builder, int x, int y, int part, int metatileId)
 {
     int col = part & 1, row = part >> 1;
     float wx = (float)x, wz = (float)y;
@@ -110,7 +146,7 @@ static void EmitCell(VoxelBuilder *builder, int x, int y, int part)
 
     if (part == VOXEL_TREE_SMALL)
     {
-        EmitSmallCell(builder, x, y);
+        EmitSmallCell(builder, x, y, metatileId >= SECONDARY_ID);
         return;
     }
     VoxelMesh_Top(builder, wx, wz, 0.0f, 0.0f, u0, v0, u1, v1, 1.0f);
@@ -183,12 +219,13 @@ void VoxelTree_EmitInstance(VoxelBuilder *builder, const VoxelMapInstance *inst,
     for (int y = y0; y < y1; ++y)
         for (int x = x0; x < x1; ++x)
         {
-            int part = VoxelTree_Part(VoxelWorld_GetMetatileId(x, y));
+            int metatileId = VoxelWorld_GetMetatileId(x, y);
+            int part = VoxelTree_Part(inst->secondaryTileset, metatileId);
             if (part >= 0)
             {
                 builder->lift = VoxelRelief_CellLift(inst, x, y);
                 builder->shift = VoxelRelief_CellShift(inst, x, y);
-                EmitCell(builder, x, y, part);
+                EmitCell(builder, x, y, part, metatileId);
                 builder->lift = 0.0f;
                 builder->shift = 0.0f;
             }
@@ -197,16 +234,19 @@ void VoxelTree_EmitInstance(VoxelBuilder *builder, const VoxelMapInstance *inst,
 
 void VoxelTree_EmitBorder(VoxelBuilder *builder, int x0, int y0, int x1, int y1)
 {
-    if (!VoxelWorld_UsesTreeSprites(VoxelWorld_Instance(0)))
+    const VoxelMapInstance *current = VoxelWorld_Instance(0);
+
+    if (!VoxelWorld_UsesTreeSprites(current))
         return;
     for (int y = y0; y < y1; ++y)
         for (int x = x0; x < x1; ++x)
         {
-            int part;
+            int metatileId, part;
             if (VoxelWorld_GetInstanceAt(x, y) != NULL)
                 continue;
-            part = VoxelTree_Part(VoxelWorld_BorderMetatile(x, y));
+            metatileId = VoxelWorld_BorderMetatile(x, y);
+            part = VoxelTree_Part(current->secondaryTileset, metatileId);
             if (part >= 0)
-                EmitCell(builder, x, y, part);
+                EmitCell(builder, x, y, part, metatileId);
         }
 }
