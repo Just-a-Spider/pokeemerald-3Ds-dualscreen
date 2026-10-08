@@ -22,6 +22,7 @@ LDFLAGS += -Wl,--wrap=GSPGPU_FlushDataCache
 LIBS := -lctru -lm
 TARGET := emerald3ds
 APP_TITLE := Pokemon Emerald 3Ds Dual Screen
+APP_SHORT := Emerald 3Ds Dual Screen
 # File names of the release executable (no spaces).
 APP_FILE := Emerald3DS
 APP_DESCRIPTION := Dual-screen port for Nintendo 3DS
@@ -29,6 +30,8 @@ APP_AUTHOR := ZallaxDev
 # The release this build is, shown under the title screen (3ds_bottom_ui.c);
 # tools/build_release.py refuses a --version that differs.
 APP_VERSION := 0.3.0
+MAKEROM ?= makerom
+BANNERTOOL ?= bannertool
 # 1: this 3DSX carries its game data in its own RomFS (development builds).
 # The release target always builds an executable without it.
 EMBED_DATA ?= 1
@@ -92,8 +95,9 @@ build/config: FORCE
 	@cmp -s build/config.new $@ || cp build/config.new $@
 	@rm -f build/config.new
 
-.PHONY: all clean verify release pak devdata
+.PHONY: all clean verify release pak devdata cia
 all: $(TARGET).3dsx
+cia: $(TARGET).cia
 
 build/%.o: src/%.c Makefile
 	@mkdir -p $(dir $@)
@@ -150,6 +154,23 @@ endif
 $(TARGET).3dsx: build/$(TARGET)_3dsx.elf $(TARGET).smdh romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin $(EMBED_MARKER)
 	$(DEVKITPRO)/tools/bin/3dsxtool $< $@ --smdh=$(TARGET).smdh --romfs=romfs
 
+build/banner.bnr: assets/artwork/banner.png assets/artwork/banner-sound.wav
+	@mkdir -p build
+	$(BANNERTOOL) makebanner -i assets/artwork/banner.png -a assets/artwork/banner-sound.wav -o $@
+
+build/icon.smdh: assets/artwork/icon.png Makefile
+	@mkdir -p build
+	$(BANNERTOOL) makesmdh -s "$(APP_SHORT)" -l "$(APP_TITLE)" -p "$(APP_AUTHOR)" -i assets/artwork/icon.png -o $@
+
+$(TARGET).cia: $(TARGET).elf build/banner.bnr build/icon.smdh emerald3ds.rsf romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin $(EMBED_MARKER)
+	$(MAKEROM) -f cia -o $@ -target t -exefslogo -rsf emerald3ds.rsf \
+		-elf $< \
+		-banner build/banner.bnr \
+		-icon build/icon.smdh \
+		-major $(word 1,$(subst ., ,$(APP_VERSION))) \
+		-minor $(word 2,$(subst ., ,$(APP_VERSION))) \
+		-micro $(word 3,$(subst ., ,$(APP_VERSION)))
+
 # Release: the executable with engine files only. Its game data is the data
 # pack the player's builder generates.
 release: build/$(TARGET)_3dsx.elf $(TARGET).smdh romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin
@@ -199,6 +220,6 @@ build/pak_test.exe: tests/pak_test.c src/3ds_pak.c include/3ds_pak.h
 	$(HOSTCC) -std=c99 -O2 -Wall -Wextra -Werror -Iinclude tests/pak_test.c src/3ds_pak.c -o $@
 
 clean:
-	rm -rf build dist $(TARGET).elf $(TARGET).3dsx $(TARGET).smdh
+	rm -rf build dist $(TARGET).elf $(TARGET).3dsx $(TARGET).smdh $(TARGET).cia
 
 -include $(OBJECTS:.o=.d)

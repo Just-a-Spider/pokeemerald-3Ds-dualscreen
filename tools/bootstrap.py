@@ -63,6 +63,7 @@ def main() -> int:
     ap.add_argument("--clean", action="store_true", help="reset the tree to the pinned commit first")
     ap.add_argument("--spanish-rom", type=Path, help="stage the Spanish data from a clean BPES ROM")
     ap.add_argument("--make", action="store_true", help="build the tools and the 3DSX afterwards")
+    ap.add_argument("--cia", action="store_true", help="build the tools and the standalone CIA afterwards")
     ap.add_argument("-j", "--jobs", type=int, default=4)
     ap.add_argument("--python", default=sys.executable, help="Python the build calls (PYTHON=)")
     args = ap.parse_args()
@@ -129,13 +130,15 @@ def main() -> int:
     shutil.copy2(ROOT / "upstream.lock", tree / "upstream.lock")
     print("bootstrap: tree ready at %s" % tree)
 
-    if args.make or args.spanish_rom:
+    if args.make or args.cia or args.spanish_rom:
         run(["make", "tools", "-j%d" % args.jobs], cwd=tree)
         run(["make", "generated", "-j%d" % args.jobs], cwd=tree)
     if args.spanish_rom:
         run([args.python, ROOT / "tools/localize_spanish.py", "--tree", tree,
              "--rom", args.spanish_rom.resolve()])
-    if args.make:
+    if args.cia:
+        run(["make", "-C", "3ds_port", "cia", "-j%d" % args.jobs, "PYTHON=%s" % args.python], cwd=tree)
+    elif args.make:
         run(["make", "-C", "3ds_port", "-j%d" % args.jobs, "PYTHON=%s" % args.python], cwd=tree)
     return 0
 
