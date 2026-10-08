@@ -124,6 +124,25 @@ void CtrPlatform_ReportMemory(const char *stage)
                  (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree());
 }
 
+_Static_assert(sizeof(CtrLock) == sizeof(LightLock), "CtrLock is a LightLock");
+
+void CtrLock_Init(CtrLock *lock) { LightLock_Init((LightLock *)lock); }
+void CtrLock_Lock(CtrLock *lock) { LightLock_Lock((LightLock *)lock); }
+void CtrLock_Unlock(CtrLock *lock) { LightLock_Unlock((LightLock *)lock); }
+
+bool CtrPlatform_StartThread(void (*entry)(void *), void *arg, unsigned stack, int core)
+{
+    s32 priority = 0x30;
+
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    return threadCreate(entry, arg, stack, priority < 0x3F ? priority + 1 : 0x3F, core, true) != NULL;
+}
+
+void CtrPlatform_SleepUs(unsigned microseconds)
+{
+    svcSleepThread((s64)microseconds * 1000);
+}
+
 void CtrPlatform_RequestExit(void) { sExit = true; }
 void CtrPlatform_RequestReset(void) { sReset = true; }
 
@@ -153,8 +172,8 @@ bool CtrPlatform_BeginFrame(void)
     if (((input->physicalDown & CTR_KEY_START) && (input->physicalHeld & CTR_KEY_R))
      || ((input->physicalDown & CTR_KEY_R) && (input->physicalHeld & CTR_KEY_START)))
     {
-        sFastForward = !sFastForward;
-        CtrLog_Write(CTR_LOG_INPUT, "HOTKEY R+START: toggle FastForward -> %d", sFastForward);
+        CtrSettings_StepSpeed(CtrSettings_Speed() > 1 ? -3 : 3, false);
+        CtrLog_Write(CTR_LOG_INPUT, "HOTKEY R+START: speed -> %d", CtrSettings_Speed());
         CtrInput_Mask(CTR_KEY_START);
     }
 
@@ -192,35 +211,56 @@ bool CtrPlatform_BeginFrame(void)
     return true;
 }
 
+/*
+ * Fast-forward (CtrSettings_Speed). Of every `speed` game frames only the last
+ * is presented and waits for the display; the others run back to back. Only
+ * a presented frame ticks the sound engine (CtrPlatform_SoundTick), so music
+ * and effects keep their speed while the game runs faster. A frame is also
+ * presented as soon as one more hidden frame and the present would no longer
+ * fit in the display's frame: the game then runs as fast as the console
+ * allows (an Old 3DS less than a New 3DS at 804 MHz) and the picture and the
+ * sound stay at 60 Hz.
+ */
+#define FRAME_MS (1000.0f / 60)
+static bool sSoundTick = true;
+static unsigned sHidden;
+static uint64_t sShownTick;
+static float sPresentMs = 4.0f;
+
+static bool FrameShown(uint64_t now)
+{
+    int speed = CtrSettings_Speed();
+    float since = sShownTick ? (now - sShownTick) * 1000.0f / SYSCLOCK_ARM11 : FRAME_MS;
+
+    if (speed <= 1 || ++sHidden >= (unsigned)speed || since + sTiming.gameMs + sPresentMs > FRAME_MS)
+    {
+        sHidden = 0;
+        return true;
+    }
+    return false;
+}
+
+bool CtrPlatform_SoundTick(void)
+{
+    return sSoundTick;
+}
+
 void CtrPlatform_EndFrame(void)
 {
     if (sWaiting)
         return;
     sWaiting = true;
     uint64_t endStart = svcGetSystemTick();
+    /* This frame's game work, for FrameShown (set again below). */
+    sTiming.gameMs = (endStart - sWorkStart) * 1000.0f / SYSCLOCK_ARM11;
+    bool shown = FrameShown(endStart);
+    sSoundTick = shown;
     if (sHooks.audioFrame)
         sHooks.audioFrame();
     /* Latch the logical frame BEFORE GPU reads its registers/OAM/palette.
      * C3D owns display pacing and swapping; no second VBlank wait. */
     if (sHooks.vblank)
         sHooks.vblank();
-
-    static bool sFfSkip = false;
-    if (sFastForward)
-    {
-        sFfSkip = !sFfSkip;
-        if (sFfSkip)
-        {
-            ++sFrames;
-            sWaiting = false;
-            return;
-        }
-    }
-    else
-    {
-        sFfSkip = false;
-    }
-
     uint64_t presentStart = svcGetSystemTick();
     /* Before the present, which reads them: its DROP line is about the frame
      * that just ran, and the voxel builds after FrameEnd estimate the next. */
@@ -228,8 +268,15 @@ void CtrPlatform_EndFrame(void)
     sTiming.vblankMs = (presentStart - endStart) * 1000.0f / SYSCLOCK_ARM11;
     /* FrameEnd(0) also flushes the console's linear LCD buffer. Calling
      * gfxFlushBuffers here would flush BOTH screens again, not just bottom. */
-    if (sHooks.videoPresent)
+    if (sHooks.videoPresent && shown)
+    {
         sHooks.videoPresent();
+        /* The present's own work, without its wait for the display. */
+        sPresentMs = (svcGetSystemTick() - presentStart) * 1000.0f / SYSCLOCK_ARM11
+                     - CtrVideo_GetStats()->waitMs;
+        if (sPresentMs < 0) sPresentMs = 0;
+        sShownTick = svcGetSystemTick();
+    }
     ++sFrames;
     uint64_t now = CtrPlatform_Milliseconds();
     sFrameMs = now - sLastFrame;
@@ -242,6 +289,7 @@ void CtrPlatform_EndFrame(void)
     if (sTiming.workMs < 0) sTiming.workMs = 0;
     if (sTiming.workMs > sTiming.peakWorkMs) sTiming.peakWorkMs = sTiming.workMs;
     if (sTiming.workMs > 1000.0f / 60) ++sTiming.slowFrames;
+    CtrProf_EndFrame(sTiming.workMs, CtrVideo_GetStats()->waitMs, sFrames);
     sWaiting = false;
 }
 

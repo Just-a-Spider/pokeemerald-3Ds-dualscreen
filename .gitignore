@@ -46,3 +46,6 @@ session-*.md
 /assets/
 extracted_icon.png
 
+# Reference worktree
+/upstream_ref/
+

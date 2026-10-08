@@ -614,8 +614,27 @@ VoxelVisualShape VoxelWorld_ClassifyTile(int worldX, int worldY)
         if (VoxelAtlas_IsVoid(inst, metatileId))
             return VOXEL_SHAPE_VOID;
 
-        /* Indoor floors, carpets and rugs lie flat with the ground. */
-        return VOXEL_SHAPE_FLAT;
+        /*
+         * Beds, tables and rugs announce nothing at all: Emerald gives them no
+         * behaviour of their own. These are ids from the general indoor
+         * tileset, and only for it: in the Pokemon Center's the same ids are
+         * its floor emblem, and read as tables, a bed and a cupboard they
+         * stood up out of its floor.
+         */
+        if (inst->secondaryTileset != &gTileset_GenericBuilding)
+            return VOXEL_SHAPE_FLAT;
+        if (metatileId == 576 || metatileId == 577 || metatileId == 584
+         || metatileId == 585 || metatileId == 586)
+            return VOXEL_SHAPE_TABLE;
+        if (metatileId == 565 || metatileId == 558 || metatileId == 566
+         || metatileId == 570)
+            return VOXEL_SHAPE_FURNITURE;
+        if (metatileId == 578)
+            return VOXEL_SHAPE_SIGN;
+        if (metatileId >= 514 && metatileId <= 517)
+            return VOXEL_SHAPE_DECAL;
+        if (metatileId == 567 || metatileId == 568 || metatileId == 575)
+            return VOXEL_SHAPE_BED;
     }
 
     return VOXEL_SHAPE_FLAT;
@@ -679,6 +698,29 @@ VoxelWeatherClass VoxelWorld_Weather(void)
     }
 #endif
     return VOXEL_WEATHER_CLEAR;
+}
+
+/*
+ * The fog's own blend: the sprites come in at EVA 12 (4 under water) over a
+ * few frames and leave the same way, so the world's fog follows them.
+ */
+float VoxelWorld_FogDensity(void)
+{
+#ifdef PLATFORM_3DS
+    float density;
+
+    if (!gWeatherPtr->fogHSpritesCreated && !gWeatherPtr->fogDSpritesCreated)
+        return 0.0f;
+    density = (float)gWeatherPtr->currBlendEVA / 12.0f;
+    return density > 1.0f ? 1.0f : density;
+#else
+    return 0.0f;
+#endif
+}
+
+bool VoxelWorld_Underground(void)
+{
+    return gMapHeader.mapType == MAP_TYPE_UNDERGROUND;
 }
 
 /*
@@ -836,12 +878,6 @@ void VoxelWorld_MarkUsedMetatiles(const void *primaryTileset, const void *second
         if (border != NULL)
             for (unsigned t = 0; t < 4; ++t)
                 used[border[t] & MAPGRID_METATILE_ID_MASK] = 2;
-
-        if (inst->indoor)
-        {
-            for (unsigned id = 0x280; id <= 0x28D; ++id) used[id] = 2;
-            for (unsigned id = 0x2A0; id <= 0x2AC; ++id) used[id] = 2;
-        }
     }
     /* The replacement removes canopy fringes even on maps that never used
      * their bare ground tile. Keep that material available in the atlas. */

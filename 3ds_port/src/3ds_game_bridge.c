@@ -37,8 +37,16 @@ void CtrEmu_EndVBlank(void)
 
 u16 Platform_GetKeyInput(void)
 {
-    /* The bottom screen's touch controls press buttons through here. */
-    u16 held = CtrInput_Get()->held | CtrBottom_InjectedKeys();
+    const CtrInput *input = CtrInput_Get();
+    u16 held = input->held;
+
+    /* Y is the 3DS's own SELECT: the registered item, as the bottom screen's
+     * Y button says. */
+    if (input->physicalHeld & CTR_KEY_Y)
+        held |= SELECT_BUTTON;
+    /* The bottom screen's column takes the buttons while X has its focus;
+     * its touch controls press buttons through here. */
+    held = CtrBottom_FilterKeys(held) | CtrBottom_InjectedKeys();
     REG_KEYINPUT = held ^ KEYS_MASK;
     return held;
 }

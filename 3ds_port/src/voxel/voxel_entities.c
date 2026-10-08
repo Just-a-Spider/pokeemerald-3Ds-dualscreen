@@ -69,7 +69,7 @@ typedef struct
     bool footPadExact;
 } VoxelSpriteSlot;
 
-static VoxelSpriteSlot sSlots[VOXEL_TOTAL_SLOTS];
+static VoxelSpriteSlot sSlots[VOXEL_SPRITE_SLOTS];
 /* The field effect sprite a slot of an unused object event shows, plus one;
  * 0 for none (VoxelEntities_Emit). */
 static u8 sSlotEffect[VOXEL_SPRITE_SLOTS];
@@ -77,25 +77,13 @@ static int sPlayerVertexFirst = -1;
 
 int VoxelEntities_PlayerVertexFirst(void) { return sPlayerVertexFirst; }
 
-static struct {
-    bool active;
-    int x, y;
-    int size;
-    const u8 *tiles;
-    const u8 *paletteNums;
-    unsigned frameOffset;
-    int partnerX, partnerY;
-} sDoorAnimState;
-
 void VoxelEntities_Reset(void)
 {
-    for (unsigned i = 0; i < VOXEL_TOTAL_SLOTS; ++i)
+    for (unsigned i = 0; i < VOXEL_SPRITE_SLOTS; ++i)
     {
         sSlots[i].valid = false;
-        if (i < VOXEL_SPRITE_SLOTS)
-            sSlotEffect[i] = 0;
+        sSlotEffect[i] = 0;
     }
-    sDoorAnimState.active = false;
 }
 
 /* ── OAM geometry ───────────────────────────────────────────────────────── */
@@ -440,6 +428,47 @@ static int VisibleRows(const VoxelSpriteSlot *slot)
 }
 
 /*
+ * How far a card standing on (cx, cz) must come towards the camera so the
+ * relief behind it stays behind it. A point of the drawing north of the feet,
+ * dv tiles up the card, lands at depth v + h: on a flight of stairs (h rising
+ * one pixel per pixel) that is exactly the card's own plane, and anything
+ * steeper stands in front of it, so the ground drew over the walker. The card
+ * is then moved along the line of sight (as far up as forward), which leaves
+ * it where it was on screen and only changes what hides what. Flat ground and
+ * walls (a south face lands behind the feet) give nothing.
+ */
+#define VOXEL_CARD_CLEAR (1.0f / VOXEL_PIXELS_PER_TILE)
+
+static float CardPush(float cx, float cz, float halfW, float height)
+{
+    const VoxelMapInstance *inst = VoxelWorld_GetInstanceAt((int)floorf(cx), (int)floorf(cz));
+    float feet, worst = -1.0f;
+    int x0 = (int)floorf(cx - halfW), x1 = (int)floorf(cx + halfW);
+    int y0 = (int)floorf(cz - height), y1 = (int)floorf(cz);
+    bool relief = false;
+
+    for (int y = y0; y <= y1 && !relief; ++y)
+        for (int x = x0; x <= x1 && !relief; ++x)
+            relief = VoxelRelief_IsSlope(VoxelRelief_Cell(VoxelWorld_GetInstanceAt(x, y), x, y));
+    if (inst == NULL || !relief)
+        return 0.0f;
+    feet = VoxelRelief_LiftAt(cx, cz);
+    for (int i = -1; i <= 1; ++i)
+    {
+        float x = cx + i * halfW * 0.75f;
+
+        for (float dv = VOXEL_CARD_CLEAR; dv <= height; dv += 2.0f * VOXEL_CARD_CLEAR)
+        {
+            float over = VoxelRelief_LiftAt(x, cz - dv) - feet - dv;
+
+            if (over > worst)
+                worst = over;
+        }
+    }
+    return worst > -VOXEL_CARD_CLEAR ? worst + VOXEL_CARD_CLEAR : 0.0f;
+}
+
+/*
  * A card standing on the ground at (cx, cz), moved (offX, offZ) from there
  * and raised by `rise`: an object stands on the centre of its tile, feet on
  * the ground; a field effect that belongs to an object is drawn in that
@@ -462,7 +491,12 @@ static void EmitBillboard(VoxelBuilder *builder, const VoxelSpriteSlot *slot, un
     /* On relief the sprite stands where its cell was lifted to, and rides
      * the lattice between cells, so a flight of stairs is climbed. */
     float lift = VoxelRelief_LiftAt(cx, cz) + rise, shift = VoxelRelief_ShiftAt(cx, cz);
-    float px = cx + offX, pz = cz + offZ + shift;
+    float push = CardPush(cx, cz, halfW, height);
+    /* Towards the camera: the right vector turned a quarter, unit length. */
+    float along = push > 0.0f ? push / sqrtf(rightX * rightX + rightZ * rightZ) : 0.0f;
+    float px = cx + offX - rightZ * along, pz = cz + offZ + shift + rightX * along;
+
+    lift += push;
     float ax = px - rightX * halfW, az = pz - rightZ * halfW;
     float bx = px + rightX * halfW, bz = pz + rightZ * halfW;
 
@@ -886,127 +920,6 @@ static int EffectOwner(const struct Sprite *sprite, const VoxelObjectCard *objec
     return best;
 }
 
-static void DecodeDoorFrame(uint16_t *atlas, const u8 *tiles, unsigned offset,
-                            int size, const u8 *paletteNums)
-{
-    unsigned baseX = (VOXEL_DOOR_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-    unsigned baseY = (VOXEL_DOOR_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-    const u8 *frameTiles = tiles + offset;
-    int totalTiles = (size == 2) ? 16 : 8;
-
-    for (int y = 0; y < 32; ++y)
-        for (int x = 0; x < 32; ++x)
-            atlas[CtrVideo_Texel(baseX + (unsigned)x, baseY + (unsigned)y,
-                                 VOXEL_SPRITE_ATLAS_DIM)] = 0;
-
-    for (int t = 0; t < totalTiles; ++t)
-    {
-        const u8 *tileData = frameTiles + t * 32;
-        int tileX, tileY;
-        u8 palIndex;
-
-        if (size == 2)
-        {
-            int m = t / 4;
-            int subtile = t % 4;
-            int mx = (m >= 2) ? 1 : 0;
-            int my = (m % 2);
-            tileX = mx * 16 + (subtile % 2) * 8;
-            tileY = my * 16 + (subtile / 2) * 8;
-            palIndex = paletteNums[my * 4 + subtile];
-        }
-        else
-        {
-            int subtile = t % 4;
-            int my = t / 4;
-            tileX = (subtile % 2) * 8;
-            tileY = my * 16 + (subtile / 2) * 8;
-            palIndex = paletteNums[t];
-        }
-
-        const u16 *pal = (const u16 *)PLTT + (palIndex * 16);
-
-        for (unsigned py = 0; py < 8; ++py)
-        {
-            for (unsigned px = 0; px < 8; ++px)
-            {
-                unsigned index8 = py * 8 + px;
-                unsigned colorIdx = (tileData[index8 / 2] >> ((px & 1) * 4)) & 0xF;
-                if (colorIdx == 0)
-                    continue;
-
-                int outX = tileX + (int)px;
-                int outY = tileY + (int)py;
-                uint16_t texel = VoxelGrade_RGBA5551(pal[colorIdx]);
-                atlas[CtrVideo_Texel(baseX + (unsigned)outX, baseY + (unsigned)outY,
-                                     VOXEL_SPRITE_ATLAS_DIM)] = texel;
-            }
-        }
-    }
-}
-
-static void EmitDoorQuad(VoxelBuilder *builder, int mapX, int mapY, int size)
-{
-    float doorWorldX = (float)(mapX - MAP_OFFSET);
-    float doorWorldZ = (float)(mapY - MAP_OFFSET);
-
-    if (VoxelWorld_InstanceCount() > 0)
-    {
-        const VoxelMapInstance *inst = VoxelWorld_Instance(0);
-        doorWorldX += (float)inst->originX;
-        doorWorldZ += (float)inst->originY;
-    }
-
-    float lift = VoxelRelief_LiftAt(doorWorldX + 0.5f, doorWorldZ + 0.5f);
-    float shift = VoxelRelief_ShiftAt(doorWorldX + 0.5f, doorWorldZ + 0.5f);
-
-    unsigned baseX = (VOXEL_DOOR_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-    unsigned baseY = (VOXEL_DOOR_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-    int pixelW = size * 16;
-    int pixelH = 32;
-
-    float u0 = (float)baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
-    float u1 = (float)(baseX + pixelW) / (float)VOXEL_SPRITE_ATLAS_DIM;
-    float v0 = 1.0f - (float)baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
-    float v1 = 1.0f - (float)(baseY + pixelH) / (float)VOXEL_SPRITE_ATLAS_DIM;
-
-    float x0 = doorWorldX;
-    float x1 = doorWorldX + (float)size;
-    float y0 = lift;
-    float y1 = lift + 2.0f;
-    float z = doorWorldZ + 1.0f + shift + 0.005f;
-
-    VoxelBuilder_Quad(builder,
-        &(VoxelVertex){x0, y0, z, u0, v1, 1.0f},
-        &(VoxelVertex){x1, y0, z, u1, v1, 1.0f},
-        &(VoxelVertex){x1, y1, z, u1, v0, 1.0f},
-        &(VoxelVertex){x0, y1, z, u0, v0, 1.0f});
-}
-
-static bool GetPokecenterPositions(float *nurseX, float *nurseZ, float *machineX, float *machineZ)
-{
-    for (int i = 0; i < OBJECT_EVENTS_COUNT; ++i)
-    {
-        if (gObjectEvents[i].active && gObjectEvents[i].graphicsId == OBJ_EVENT_GFX_NURSE)
-        {
-            float nx = (float)(gObjectEvents[i].currentCoords.x - MAP_OFFSET);
-            float nz = (float)(gObjectEvents[i].currentCoords.y - MAP_OFFSET);
-            if (VoxelWorld_InstanceCount() > 0)
-            {
-                const VoxelMapInstance *inst = VoxelWorld_Instance(0);
-                nx += (float)inst->originX;
-                nz += (float)inst->originY;
-            }
-            if (nurseX) *nurseX = nx;
-            if (nurseZ) *nurseZ = nz;
-            if (machineX) *machineX = nx - 1.0f;
-            if (machineZ) *machineZ = nz;
-            return true;
-        }
-    }
-    return false;
-}
-
 unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelCamera *camera,
                             VoxelBuilder *shadows, VoxelBuilder *reflections)
 {
@@ -1306,171 +1219,5 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
                           -sprite->y2 * pixel, rightX, rightZ, stretch, reference->shade);
         }
     }
-
-    /* ── Door animation ─────────────────────────────────────────────────── */
-    {
-        int doorX = 0, doorY = 0, doorSize = 1;
-        const u8 *doorTiles = NULL;
-        const u8 *doorPalettes = NULL;
-        unsigned doorFrameOffset = 0;
-        int partnerX = -1, partnerY = -1;
-        static int sLastMapGroup = -1, sLastMapNum = -1;
-        static unsigned sLastDecodedOffset = 0xFFFFFFFF;
-        static const u8 *sLastDecodedTiles = NULL;
-        int curGroup = -1, curNum = -1;
-
-        VoxelWorld_GetLocation(&curGroup, &curNum);
-        if (curGroup != sLastMapGroup || curNum != sLastMapNum)
-        {
-            sLastMapGroup = curGroup;
-            sLastMapNum = curNum;
-            sDoorAnimState.active = false;
-            sLastDecodedOffset = 0xFFFFFFFF;
-            sLastDecodedTiles = NULL;
-            ResetCurrentDoorAnimationInfo();
-        }
-
-        bool doorRunning = GetCurrentDoorAnimationInfo(&doorX, &doorY, &doorSize,
-                                                       &doorTiles, &doorPalettes,
-                                                       &doorFrameOffset, &partnerX, &partnerY);
-        if (doorRunning)
-        {
-            sDoorAnimState.active = true;
-            sDoorAnimState.x = doorX;
-            sDoorAnimState.y = doorY;
-            sDoorAnimState.size = doorSize;
-            sDoorAnimState.tiles = doorTiles;
-            sDoorAnimState.paletteNums = doorPalettes;
-            sDoorAnimState.frameOffset = doorFrameOffset;
-            sDoorAnimState.partnerX = partnerX;
-            sDoorAnimState.partnerY = partnerY;
-            if (doorFrameOffset != sLastDecodedOffset || doorTiles != sLastDecodedTiles)
-            {
-                sLastDecodedOffset = doorFrameOffset;
-                sLastDecodedTiles = doorTiles;
-                DecodeDoorFrame(atlas, doorTiles, doorFrameOffset, doorSize, doorPalettes);
-                ++updates;
-            }
-        }
-        else
-        {
-            sDoorAnimState.active = false;
-            sLastDecodedOffset = 0xFFFFFFFF;
-            sLastDecodedTiles = NULL;
-        }
-
-        if (sDoorAnimState.active)
-        {
-            float px = 0.0f, pz = 0.0f;
-            VoxelEntities_GetPlayerWorldPos(&px, &pz);
-            float dx = fabsf(px - ((float)(sDoorAnimState.x - MAP_OFFSET) + 0.5f));
-            float dz = fabsf(pz - ((float)(sDoorAnimState.y - MAP_OFFSET) + 0.5f));
-            if (dx > 4.0f || dz > 4.0f)
-            {
-                sDoorAnimState.active = false;
-                sLastDecodedOffset = 0xFFFFFFFF;
-                sLastDecodedTiles = NULL;
-                ResetCurrentDoorAnimationInfo();
-            }
-            else
-            {
-                EmitDoorQuad(builder, sDoorAnimState.x, sDoorAnimState.y, sDoorAnimState.size);
-                if (sDoorAnimState.partnerX >= 0 && sDoorAnimState.partnerY >= 0)
-                    EmitDoorQuad(builder, sDoorAnimState.partnerX, sDoorAnimState.partnerY, sDoorAnimState.size);
-            }
-        }
-    }
-
-    /* ── Pokecenter healing animation ─────────────────────────────────────── */
-    {
-        float nurseX = 0.0f, nurseZ = 0.0f, machineX = 0.0f, machineZ = 0.0f;
-        bool hasNurse = false;
-        bool pokeballRefreshed = false;
-        bool monitorRefreshed = false;
-
-        for (unsigned id = 0; id < MAX_SPRITES; ++id)
-        {
-            const struct Sprite *sprite = &gSprites[id];
-            if (!sprite->inUse)
-                continue;
-
-            if (CtrSprite_IsPokeballGlow(sprite))
-            {
-                if (!hasNurse)
-                    hasNurse = GetPokecenterPositions(&nurseX, &nurseZ, &machineX, &machineZ);
-                if (hasNurse)
-                {
-                    if (!pokeballRefreshed)
-                    {
-                        if (RefreshSlot(VOXEL_HEAL_BALL_SLOT, sprite, atlas))
-                            ++updates;
-                        pokeballRefreshed = true;
-                    }
-
-                    int dx = (sprite->x + sprite->x2) - 93;
-                    int dy = (sprite->y + sprite->y2) - 36;
-                    int col = (dx >= 3) ? 1 : 0;
-                    int row = dy / 4;
-                    if (row < 0) row = 0;
-                    if (row > 2) row = 2;
-
-                    float bx = machineX + (col == 0 ? 0.36f : 0.64f);
-                    float bz = machineZ + (row == 0 ? 0.32f : (row == 1 ? 0.52f : 0.72f));
-                    float by = 0.71f;
-
-                    unsigned baseX = (VOXEL_HEAL_BALL_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-                    unsigned baseY = (VOXEL_HEAL_BALL_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-                    float u0 = (float)baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
-                    float u1 = (float)(baseX + 8) / (float)VOXEL_SPRITE_ATLAS_DIM;
-                    float v0 = 1.0f - (float)baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
-                    float v1 = 1.0f - (float)(baseY + 8) / (float)VOXEL_SPRITE_ATLAS_DIM;
-                    float halfW = 0.14f;
-
-                    VoxelBuilder_Quad(builder,
-                        &(VoxelVertex){bx - halfW, by, bz + halfW, u0, v1, 1.0f},
-                        &(VoxelVertex){bx + halfW, by, bz + halfW, u1, v1, 1.0f},
-                        &(VoxelVertex){bx + halfW, by, bz - halfW, u1, v0, 1.0f},
-                        &(VoxelVertex){bx - halfW, by, bz - halfW, u0, v0, 1.0f});
-                }
-            }
-            else if (CtrSprite_IsPokecenterMonitor(sprite))
-            {
-                if (!sprite->invisible)
-                {
-                    if (!hasNurse)
-                        hasNurse = GetPokecenterPositions(&nurseX, &nurseZ, &machineX, &machineZ);
-                    if (hasNurse)
-                    {
-                        if (!monitorRefreshed)
-                        {
-                            if (RefreshSlot(VOXEL_HEAL_MONITOR_SLOT, sprite, atlas))
-                                ++updates;
-                            monitorRefreshed = true;
-                        }
-
-                        float mx = nurseX + 0.5f;
-                        float mz = nurseZ - 0.5f;
-                        float my = 0.02f;
-
-                        unsigned baseX = (VOXEL_HEAL_MONITOR_SLOT % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-                        unsigned baseY = (VOXEL_HEAL_MONITOR_SLOT / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
-                        float u0 = (float)baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
-                        float u1 = (float)(baseX + 16) / (float)VOXEL_SPRITE_ATLAS_DIM;
-                        float v0 = 1.0f - (float)baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
-                        float v1 = 1.0f - (float)(baseY + 16) / (float)VOXEL_SPRITE_ATLAS_DIM;
-                        float halfW = 0.5f;
-                        float halfH = 0.5f;
-
-                        VoxelBuilder_Quad(builder,
-                            &(VoxelVertex){mx - halfW, my, mz + halfH, u0, v1, 1.0f},
-                            &(VoxelVertex){mx + halfW, my, mz + halfH, u1, v1, 1.0f},
-                            &(VoxelVertex){mx + halfW, my, mz - halfH, u1, v0, 1.0f},
-                            &(VoxelVertex){mx - halfW, my, mz - halfH, u0, v0, 1.0f});
-                    }
-                }
-            }
-        }
-    }
-
     return updates;
 }

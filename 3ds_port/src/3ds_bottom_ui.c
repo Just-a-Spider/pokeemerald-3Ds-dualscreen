@@ -22,12 +22,16 @@
  * submenu entries, messages, yes/no questions) is mirrored here as buttons.
  * The player never sees a cursor move; the game still decides everything.
  *
- * Nothing here is new artwork. Every panel is built from the game's own
- * graphics, decoded from the same RomFS files the game loads: the party menu
- * background and slot tilemaps, the battle text box frames, the Hoenn region
- * map, the trainer card, mon/item/type/status icons, front pictures, the bag
- * sprite, the window frames and the game's fonts. Texts are the game's
- * strings where it has them.
+ * The column is the port's own design (an emerald rail, plates, a focus
+ * ring; see "The column's look"), with the game's item icons on it and two
+ * new pictures, the RUN shoe and the Y badge (3ds_bottom_art.h, from
+ * assets/artwork/bottom). Everything else is the game's own graphics,
+ * decoded from the same RomFS files the game loads: the party menu
+ * background, the battle text box frames, the Hoenn region map, the trainer
+ * card, mon/item/type/status icons, front pictures, the bag sprite, the
+ * window frames and the game's fonts. Texts are the game's strings where it
+ * has them. X walks the column with the buttons (ProcessKeys); the 3DS's Y
+ * is SELECT (3ds_game_bridge.c).
  *
  * Cost model, chosen for an Old 3DS whose frame the top screen already fills:
  *   - every frame: a snapshot of the few values on screen (a memcmp of a few
@@ -41,397 +45,22 @@
  * No GPU time, no VRAM, no linear memory.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-#include "global.h"
-#include "main.h"
-#include "money.h"
-#include "battle.h"
-#include "battle_anim.h"
-#include "battle_controllers.h"
-#include "battle_main.h"
-#include "battle_message.h"
-#include "contest_util.h"
-#include "data.h"
-#include "event_data.h"
-#include "fieldmap.h"
-#include "fonts.h"
-#include "graphics.h"
-#include "item.h"
-#include "item_icon.h"
-#include "item_menu.h"
-#include "menu.h"
-#include "new_game.h"
-#include "overworld.h"
-#include "palette.h"
-#include "party_menu.h"
-#include "pokedex.h"
-#include "pokemon.h"
-#include "pokemon_icon.h"
-#include "pokemon_summary_screen.h"
-#include "pokenav.h"
-#include "region_map.h"
-#include "save.h"
-#include "script.h"
-#include "sound.h"
-#include "sprite.h"
-#include "string_util.h"
-#include "strings.h"
-#include "task.h"
-#include "text.h"
-#include "text_window.h"
-#include "util.h"
-#include "constants/items.h"
-#include "constants/map_types.h"
-#include "constants/party_menu.h"
-#include "constants/region_map_sections.h"
-#include "constants/songs.h"
-#include "constants/trainers.h"
-#include "port_platform.h"
-
-#include "3ds_data.h"
-#include "3ds_bottom.h"
-#include "3ds_input.h"
-#include "3ds_log.h"
-#include "3ds_platform.h"
-#include "3ds_video.h"
-
-/* Exported by the game under PLATFORM_3DS, or not exported by its headers. */
-void CB2_BagMenuRun(void);
-/* party_menu.c: the column's buttons close the game's party menu. */
-bool8 CtrParty_Close(bool8 leaving);
-/* menu.c: a tap on a game screen shown here, for what waits for input. */
-void CtrMenu_PostTap(s16 x, s16 y);
-bool8 CtrMenu_YesNoOpen(void);
-void CtrStartMenu_Request(u8 action);
-bool8 CtrStartMenu_Pending(void);
-bool8 CtrStartMenu_Available(void);
-bool8 CtrStartMenu_Busy(void);
-bool8 CtrPokenav_IsOpen(void);
-u32 CtrPokenav_Screen(bool8 *ready);
-int CtrPokenavMenu_Options(int *cursor);
-void CtrPokenavMenu_Rows(int *yStart, int *deltaY);
-bool8 CtrPokenavList_View(u8 *x, u8 *y, u8 *width, u16 *top, u16 *selected, u16 *shown, u16 *count);
-u8 CtrPokenavMatchCall_Input(u16 *cursor, u16 *count);
-bool8 CtrPokenavRibbons_Summary(u16 *selected, u16 *normal, u16 *gift, u16 *giftStart, bool8 *expanded);
-bool8 CtrRegionMap_Cursor(s16 *x, s16 *y, bool8 *zoomed, bool8 *moving);
-bool8 CtrMonMarkings_Menu(s8 *cursor, s16 *x, s16 *y);
-bool8 CtrPokenavCondition_Marking(void);
-void CtrPokenavMenu_SetCursor(int cursor);
-void CtrPokenavList_SetSelected(u16 selected);
-void CtrPokenavMatchCall_SetOption(u16 cursor);
-void CtrMonMarkings_SetCursor(s8 cursor);
-bool8 CtrStorage_IsOpen(void);
-void CtrStorage_Tap(s16 x, s16 y);
-void CtrSummary_Tap(s16 x, s16 y);
-/* item_menu.c: the bag's touches, in pixels of its picture. */
-enum { BAG_TOUCH_DOWN, BAG_TOUCH_MOVE, BAG_TOUCH_UP, BAG_TOUCH_CANCEL };
-void CtrBag_Touch(u8 phase, s16 x, s16 y);
-bool8 CtrBag_Close(void);
-/* pokedex.c: the Pokédex's touches, in pixels of its picture, as the bag's. */
-bool8 CtrPokedex_IsOpen(void);
-void CtrPokedex_Touch(u8 phase, s16 x, s16 y);
-bool8 CtrPokedex_Close(bool8 leave);
-void SetPokemonCryStereo(u32 val);
-extern const struct PokedexEntry gPokedexEntries[];
-
-/* start_menu.c's MENU_ACTION_* (the enum is private to that file). */
-enum { START_POKEDEX, START_POKEMON, START_BAG, START_POKENAV, START_NONE = 0xFF };
-
-#define W CTR_BOTTOM_WIDTH
-#define H CTR_BOTTOM_HEIGHT
-/* The content area left of the button column. */
-#define CW 240
-#define COL_X CW
-
-
+#include "bottom_ui/bottom_ui_internal.h"
 #include "bottom_ui/bottom_ui_draw.c"
 #include "bottom_ui/bottom_ui_state.c"
 #include "bottom_ui/bottom_ui_screens.c"
-
-/* ------------------------------------------------------------------------ */
-/* Redraw and present                                                       */
-/* ------------------------------------------------------------------------ */
-
-static void BuildBackgroundCaches(void)
-{
-    sOX = 0;
-    /* The 240px view with the column beside it, and the whole screen. */
-    sDst = sCache[CACHE_MENU];
-    DrawPartyBackground(CW / 8, H / 8);
-    DrawColumnBackground();
-    sDst = sCache[CACHE_WIDE];
-    DrawPartyBackground(W / 8, H / 8);
-    BuildMapCache();
-    sDst = sCanvas;
-}
-
-static void Render(const ViewState *s)
-{
-    ResolveFonts();
-    sHitCount = 0;
-    sAnimCount = 0;
-    sDst = sCanvas;
-    sOX = 0;
-
-    if (s->mode == MODE_OFF)
-    {
-        memset(sCanvas, 0, sizeof(sCanvas));
-    }
-    else if (s->mode >= MODE_BATTLE_INFO)
-    {
-        CopyCache(CACHE_WIDE);
-        DrawBattleHeader(s);
-        if (s->mode == MODE_BATTLE_ACTION)
-            DrawBattleActions(s);
-        else if (s->mode == MODE_BATTLE_MOVE)
-            DrawBattleMoves(s);
-        else if (s->mode == MODE_BATTLE_TARGET)
-            DrawBattleTarget(s);
-        else
-            DrawBattleInfo(s);
-    }
-    else
-    {
-        /* In battle the bag and the party menu have the whole screen. */
-        bool8 column = !s->inBattle && s->bagView != BAG_VIEW_WHOLE;
-
-        if (s->screen == SCR_MAP && column)
-            CopyCache(CACHE_MAP);
-        else if (s->screen == SCR_CARD && column)
-        {
-            BuildCardCache(s->stars > 4 ? 4 : s->stars, s->gender);
-            CopyCache(sCache[CACHE_CARD] ? CACHE_CARD : CACHE_MENU);
-        }
-        else
-            CopyCache(column ? CACHE_MENU : CACHE_WIDE);
-        sOX = column ? 0 : (W - CW) / 2;
-        switch (s->screen)
-        {
-        case SCR_MAP: DrawRegionMap(s); break;
-        case SCR_POKEMON:
-        case SCR_BAG:
-        case SCR_POKEDEX:
-            /* The game's party menu, bag and Pokédex are drawn there by the compositor;
-             * black until they are, as they fade in from black, and while
-             * the field is on its way to opening them (OpenAsked). */
-            FillRect(0, 0, CW, H, 0);
-            break;
-        case SCR_CARD: DrawTrainerCard(s); break;
-        case SCR_SAVE: DrawSave(s); break;
-        case SCR_OPTION: DrawOptions(s); break;
-        }
-        sOX = 0;
-        if (column)
-            DrawColumn(s);
-        else if (s->bagView == BAG_VIEW_WHOLE)
-            memset(sCanvas, 0, sizeof(sCanvas));
-    }
-    DrawAnimIcons();
-    /* Left of the column is the PokéNav's while the compositor draws it, and
-     * the whole screen the boxes'. */
-    if (!ClipIsFull())
-        CtrBottom_BlitRect(sCanvas, sClipX0, sClipY0, sClipX1, sClipY1);
-    else if (!CtrVideo_BottomWhole())
-        CtrBottom_Blit(sCanvas, CtrVideo_BottomInUse() ? CW : 0, W);
-}
-
-/* ------------------------------------------------------------------------ */
-/* Partial redraws                                                          */
-/* ------------------------------------------------------------------------ */
-
-typedef struct { int x0, y0, x1, y1; } Rect;
-
-static void RectInit(Rect *r)
-{
-    r->x0 = r->y0 = W;
-    r->x1 = r->y1 = 0;
-}
-
-static void RectAdd(Rect *r, int x0, int y0, int x1, int y1)
-{
-    if (x0 < r->x0) r->x0 = x0;
-    if (y0 < r->y0) r->y0 = y0;
-    if (x1 > r->x1) r->x1 = x1;
-    if (y1 > r->y1) r->y1 = y1;
-}
-
-/* A button's rectangle, as the last redraw laid it out, with a little margin
- * for its shadow; every hit of the id counts. FALSE when there is none. */
-static bool8 RectAddHitOf(Rect *r, u8 id)
-{
-    bool8 found = FALSE;
-
-    for (int i = 0; i < sHitCount; ++i)
-        if (sHits[i].id == id)
-        {
-            RectAdd(r, sHits[i].x - 2, sHits[i].y - 2, sHits[i].x + sHits[i].w + 2, sHits[i].y + sHits[i].h + 2);
-            found = TRUE;
-        }
-    return found;
-}
-
-static bool8 RectAddHit(Rect *r, u8 id)
-{
-    if (id == HIT_NONE)
-        return TRUE;
-    /* An option row is lit whole, whichever of its two halves is touched. */
-    if (id >= HIT_OPTION && id < HIT_OPTION + 2 * HIT_OPTION_BACK)
-    {
-        u8 row = (id - HIT_OPTION) % HIT_OPTION_BACK;
-
-        return RectAddHitOf(r, HIT_OPTION + row) && RectAddHitOf(r, HIT_OPTION + HIT_OPTION_BACK + row);
-    }
-    return RectAddHitOf(r, id);
-}
-
-/* The pixels the header's panel of a battler covers, and a party slot's on
- * the battle info screen: where an HP bar, its numbers and the status icon
- * change. Positions from DrawBattleHeader and DrawBattleInfo. */
-static void RectAddBattler(Rect *r, const ViewState *s, int i)
-{
-    if (s->isDouble)
-    {
-        int x = i & 1 ? 170 : 10, y = i & 2 ? 28 : 8;
-
-        RectAdd(r, x + 66, y - 2, x + 150, y + 18);
-    }
-    else
-    {
-        int x = i == 0 ? 10 : 170;
-
-        RectAdd(r, x - 2, 6, x + 148, 54);
-    }
-}
-
-static void RectAddPartySlot(Rect *r, int i)
-{
-    int x = 12 + (i % 3) * 100, y = 100 + (i / 3) * 72;
-
-    RectAdd(r, x - 2, y - 2, x + 98, y + 34);
-}
-
-/* The clip a redraw can be limited to, when the new view differs from the
- * shown one only in things that touch one part of the screen: the button lit
- * by a press or the battle cursor, an HP bar and its status, an option's
- * value. FALSE when anything else differs, or the part cannot be told. */
-static bool8 DirtyRect(const ViewState *now, const ViewState *shown, Rect *r)
-{
-    static ViewState probe;
-    bool8 battle = now->mode >= MODE_BATTLE_INFO;
-
-    if (now->mode != shown->mode || (now->mode != MODE_FIELD && !battle) || shown->screen != now->screen
-     || (now->mode == MODE_FIELD && now->screen != SCR_OPTION))
-        return FALSE;
-    probe = *now;
-    probe.pressed = shown->pressed;
-    if (now->mode == MODE_BATTLE_ACTION || now->mode == MODE_BATTLE_MOVE)
-        probe.cursor = shown->cursor;
-    for (int i = 0; i < MAX_BATTLERS_COUNT; ++i)
-    {
-        probe.battlers[i].hp = shown->battlers[i].hp;
-        probe.battlers[i].ailment = shown->battlers[i].ailment;
-    }
-    if (now->mode == MODE_BATTLE_INFO)
-        for (int i = 0; i < PARTY_SIZE; ++i)
-        {
-            probe.party[i].hp = shown->party[i].hp;
-            probe.party[i].ailment = shown->party[i].ailment;
-        }
-    if (now->mode == MODE_FIELD)
-        for (int i = 0; i < OPTION_ROWS; ++i)
-            if (i != OPT_FRAME && i != OPT_VOXEL)
-                probe.options[i] = shown->options[i];
-    if (memcmp(&probe, shown, sizeof(probe)) != 0)
-        return FALSE;
-
-    RectInit(r);
-    if (now->pressed != shown->pressed && !(RectAddHit(r, now->pressed) && RectAddHit(r, shown->pressed)))
-        return FALSE;
-    if (now->cursor != shown->cursor)
-    {
-        for (int k = 0; k < 2; ++k)
-        {
-            u8 c = k ? now->cursor : shown->cursor, id;
-
-            if (now->mode == MODE_BATTLE_ACTION)
-                id = HIT_ACTION + c;
-            else
-                id = c == MAX_MON_MOVES ? HIT_CANCEL : HIT_MOVE + c;
-            if (!RectAddHit(r, id))
-                return FALSE;
-        }
-    }
-    for (int i = 0; i < MAX_BATTLERS_COUNT; ++i)
-        if (now->battlers[i].hp != shown->battlers[i].hp || now->battlers[i].ailment != shown->battlers[i].ailment)
-            RectAddBattler(r, now, i);
-    for (int i = 0; i < PARTY_SIZE; ++i)
-        if (now->party[i].hp != shown->party[i].hp || now->party[i].ailment != shown->party[i].ailment)
-            RectAddPartySlot(r, i);
-    for (int i = 0; now->mode == MODE_FIELD && i < OPTION_ROWS; ++i)
-        if (now->options[i] != shown->options[i] && !RectAddHit(r, HIT_OPTION + i))
-            return FALSE;
-    return r->x0 < r->x1 && r->y0 < r->y1;
-}
-
-static void RenderPart(const ViewState *s, int x0, int y0, int x1, int y1);
-
-/*
- * The options list dragged: the rows already on the screen move with the
- * finger as pixels, and only what that uncovers is drawn - the strip at the
- * edge, the bars of the party-menu pattern at the top and bottom, which do not
- * scroll, and the scroll bar's column. FALSE when anything else differs.
- */
-static bool8 ScrollOptions(const ViewState *now, const ViewState *shown)
-{
-    (void)now;
-    (void)shown;
-    /* Clean full redraw avoids slice tearing and row smearing during scrolling */
-    return FALSE;
-}
-
-/* Draws one part of the screen. The canvas outside it keeps what is shown. */
-static void RenderPart(const ViewState *s, int x0, int y0, int x1, int y1)
-{
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > W) x1 = W;
-    if (y1 > H) y1 = H;
-    if (x0 >= x1 || y0 >= y1)
-        return;
-    /* An icon the part touches is redrawn whole: the part grows to hold it. */
-    for (int pass = 0; pass < 2; ++pass)
-        for (int i = 0; i < sAnimCount; ++i)
-        {
-            int ix0, iy0, ix1, iy1;
-
-            IconRect(&sAnim[i], &ix0, &iy0, &ix1, &iy1);
-            if (RectsMeet(ix0, iy0, ix1, iy1, x0, y0, x1, y1))
-            {
-                if (ix0 < x0) x0 = ix0;
-                if (iy0 < y0) y0 = iy0;
-                if (ix1 > x1) x1 = ix1;
-                if (iy1 > y1) y1 = iy1;
-            }
-        }
-    sClipX0 = x0;
-    sClipY0 = y0;
-    sClipX1 = x1;
-    sClipY1 = y1;
-    Render(s);
-    sClipX0 = sClipY0 = 0;
-    sClipX1 = W;
-    sClipY1 = H;
-}
-
-
 #include "bottom_ui/bottom_ui_touch.c"
 
 /* ------------------------------------------------------------------------ */
 /* Entry points                                                             */
 /* ------------------------------------------------------------------------ */
+
+/* field_player_avatar.c: B walks instead of running while RUN is on. */
+bool8 CtrPlayer_RunAlways(void)
+{
+    return CtrSettings_RunAlways();
+}
 
 void CtrBottom_Init(void)
 {
@@ -553,7 +182,7 @@ static bool8 PartialRedraw(const ViewState *now)
         RenderPart(now, r.x0, r.y0, r.x1, r.y1);
         return TRUE;
     }
-    return ScrollOptions(now, &sShown);
+    return FALSE;
 }
 
 static void BottomProfile(u32 frame, u8 mode, const uint64_t ticks[3], unsigned kind)
@@ -586,8 +215,10 @@ void CtrBottom_Frame(void)
     if (sAsked.kind == ASK_NONE)
         sBattleTap = HIT_NONE;
 
+    sFrames = frames;
     mode = CurrentMode();
     pressed = ProcessTouch(mode);
+    ProcessKeys(mode);
     OpenAsked(mode);
     RunPlan();
     RunNav(mode);
@@ -631,8 +262,26 @@ void CtrBottom_Frame(void)
         BottomProfile(frames, mode, ticks, 1);
         return;
     }
-    /* A press, a cursor, an HP bar, an option's value, a drag of the options
-     * list: only the part that changes is drawn. */
+    /* The focus ring, or a press on the column: only those buttons. */
+    if (!sForceRedraw && sShown.mode != 0xFF && !CtrVideo_BottomWhole() && memcmp(&sState, &sShown, sizeof(sState)) != 0)
+    {
+        Rect r;
+
+        bool8 dirty = FocusDirtyRect(&sState, &sShown, &r);
+
+        /* The column's hits reach 2px past its edge, the drawing does not. */
+        if (dirty && CtrVideo_BottomInUse() && r.x0 < CW)
+            r.x0 = CW;
+        if (dirty && r.x0 < r.x1)
+        {
+            RenderPart(&sState, r.x0, r.y0, r.x1, r.y1);
+            sShown = sState;
+            BottomProfile(frames, mode, ticks, 3);
+            return;
+        }
+    }
+    /* A press, a cursor, an HP bar, an option's value: only the part that
+     * changes is drawn. */
     if (!sForceRedraw && !CtrVideo_BottomInUse() && !CtrVideo_BottomWhole() && sShown.mode != 0xFF
      && memcmp(&sState, &sShown, sizeof(sState)) != 0 && PartialRedraw(&sState))
     {
@@ -667,5 +316,7 @@ void CtrBottom_Frame(void)
         sAnimFrame = (frames >> 4) & 1;
         AnimateIcons();
     }
+    if (mode == MODE_BATTLE_INFO)
+        WarmBattleMenus();
     BottomProfile(frames, mode, ticks, 0);
 }

@@ -1,0 +1,42 @@
+Pokémon Emerald 3Ds Dual Screen changes to pret/pokeemerald 76463dac15cad36aca5e2b3f6366abf9e53f814f: fast egg hatching
+Applies after 0009-optional-settings.patch; apply with tools/bootstrap.py.
+
+diff --git a/src/daycare.c b/src/daycare.c
+--- a/src/daycare.c
++++ b/src/daycare.c
+@@ -897,6 +897,35 @@
+             TriggerPendingDaycareEgg();
+     }
+ 
++#ifdef PLATFORM_3DS
++    // Fast egg hatching (OPTIONS, CHEATS): with an egg in the party, one
++    // hatches every 5 steps.
++    {
++        static u8 sFastEggSteps;
++        s32 egg = -1;
++
++        for (i = 0; i < gPlayerPartyCount && egg < 0; i++)
++        {
++            if (GetMonData(&gPlayerParty[i], MON_DATA_IS_EGG)
++             && !GetMonData(&gPlayerParty[i], MON_DATA_SANITY_IS_BAD_EGG))
++                egg = i;
++        }
++        if (!CtrExtras_Get("fast_eggs") || egg < 0)
++        {
++            sFastEggSteps = 0;
++        }
++        else if (++sFastEggSteps >= 5)
++        {
++            u32 zero = 0;
++
++            sFastEggSteps = 0;
++            SetMonData(&gPlayerParty[egg], MON_DATA_FRIENDSHIP, &zero);
++            gSpecialVar_0x8004 = egg;
++            return TRUE;
++        }
++    }
++#endif
++
+     // Try to hatch Egg
+     if (++daycare->stepCounter == 255)
+     {

@@ -9,6 +9,12 @@
 #include "voxel_camera.h"
 #include "voxel_world.h"
 
+void CtrVoxel_InvalidateTreeQuadrant(void);
+
+void Voxel_UpdateAllObjectFacing(void)
+{
+}
+
 #define VOXEL_DEG_TO_RAD (3.14159265358979323846f / 180.0f)
 #define VOXEL_FOLLOW 0.15f
 
@@ -210,9 +216,7 @@ void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ
         if (curQ != sLastQuadrant)
         {
             sLastQuadrant = curQ;
-            extern void Voxel_UpdateAllObjectFacing(void);
             Voxel_UpdateAllObjectFacing();
-            extern void CtrVoxel_InvalidateTreeQuadrant(void);
             CtrVoxel_InvalidateTreeQuadrant();
         }
     }

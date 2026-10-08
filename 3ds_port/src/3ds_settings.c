@@ -23,22 +23,53 @@ static bool sVoxel = false;
  * renderer builds what the camera actually sees at any of them (its frustum,
  * ctr_voxel.c); further out or flatter would only cost more chunks per frame.
  */
-static const int sPitches[] = {28, 32, 36, 40, 44};
+static const int sPitches[] = {34, 37, 40, 43, 46};
 static const int sZooms[] = {90, 100, 110, 120};
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
-static int sPitch = 1, sZoom = 1;
-/* The HD-2D tilt-shift blur over the voxel picture (3ds_video.c): on unless turned off. */
+static int sPitch = 2, sZoom = 1;
+/* The HD-2D tilt-shift blur over the voxel picture (3ds_video.c): on unless
+ * turned off. */
 static bool sVoxelBlur = true;
 /* Battles in front of the voxel world rather than the GBA's scenery
  * (3ds_video.c, RenderBattleWorld): off unless turned on. */
 static bool sVoxelBattle = false;
 /* Stereoscopic 3D mode for voxel engine (off by default on Old 3DS for 60fps performance). */
 static bool sVoxelStereo = false;
-/* The FPS counter in the top screen's corner (3ds_video.c): off unless turned on. */
+/* The FPS counter in the top screen's corner (3ds_video.c): off unless
+ * turned on. */
 static bool sShowFps = false;
+/* Running without holding B (the bottom screen's RUN button; B then walks):
+ * off unless turned on. */
+static bool sRunAlways = false;
+/* Fast-forward: game frames per shown frame (3ds_platform.c, FrameShown);
+ * 1 is normal speed. */
+static const int sSpeeds[] = {1, 2, 3, 4};
+static int sSpeed = 0;
+
 static bool sDayNight = true;
 static float sDuskStart = 17.0f;
 static float sNightStart = 20.0f;
+
+/*
+ * Settings without a variable of their own (the ENHANCEMENTS and CHEATS pages,
+ * 3ds_extras.c): "key=number" lines kept as read and written back with the
+ * rest. A key no build knows yet survives in the file too.
+ */
+#define EXTRA_KEYS 48
+static struct { char key[24]; int value; } sExtra[EXTRA_KEYS];
+static int sExtraCount;
+
+static int ExtraIndex(const char *key, bool add)
+{
+    for (int i = 0; i < sExtraCount; ++i)
+        if (strcmp(sExtra[i].key, key) == 0)
+            return i;
+    if (!add || sExtraCount == EXTRA_KEYS || strlen(key) >= sizeof(sExtra[0].key))
+        return -1;
+    strcpy(sExtra[sExtraCount].key, key);
+    sExtra[sExtraCount].value = 0;
+    return sExtraCount++;
+}
 
 static int Find(const int *values, int count, int value, int fallback)
 {
@@ -70,7 +101,7 @@ void CtrSettings_Load(void)
         else if (sscanf(line, "voxel_zoom=%d", &value) == 1)
             sZoom = Find(sZooms, COUNT(sZooms), value, sZoom);
         else if (strncmp(line, "voxel_blur=", 11) == 0)
-            sVoxelBlur = line[11] == '1';
+            sVoxelBlur = line[11] != '0';
         else if (strncmp(line, "voxel_battle=", 13) == 0)
             sVoxelBattle = line[13] == '1';
         else if (strncmp(line, "voxel_stereo=", 13) == 0)
@@ -79,6 +110,10 @@ void CtrSettings_Load(void)
             sVoxelStereo = line[9] == '1';
         else if (strncmp(line, "fps=", 4) == 0)
             sShowFps = line[4] == '1';
+        else if (strncmp(line, "run=", 4) == 0)
+            sRunAlways = line[4] == '1';
+        else if (sscanf(line, "speed=%d", &value) == 1)
+            sSpeed = Find(sSpeeds, COUNT(sSpeeds), value, sSpeed);
         else if (strncmp(line, "daynight=", 9) == 0)
             sDayNight = line[9] == '1';
         else if (sscanf(line, "time_offset=%f", &fval) == 1)
@@ -87,11 +122,19 @@ void CtrSettings_Load(void)
             sDuskStart = fval;
         else if (sscanf(line, "night_start=%f", &fval) == 1)
             sNightStart = fval;
+        else
+        {
+            char key[sizeof(sExtra[0].key)];
+            int val;
+
+            if (sscanf(line, "%23[a-z0-9_]=%d", key, &val) == 2 && (val = ExtraIndex(key, true)) >= 0)
+                sExtra[val].value = value;
+        }
     }
     fclose(file);
-    CtrLog_Write(CTR_LOG_FS, "settings: voxel=%d pitch=%d zoom=%d blur=%d battle=%d fps=%d daynight=%d",
+    CtrLog_Write(CTR_LOG_FS, "settings: voxel=%d pitch=%d zoom=%d blur=%d battle=%d fps=%d run=%d speed=%d daynight=%d",
                  sVoxel ? 1 : 0, sPitches[sPitch], sZooms[sZoom], sVoxelBlur ? 1 : 0,
-                 sVoxelBattle ? 1 : 0, sShowFps ? 1 : 0, sDayNight ? 1 : 0);
+                 sVoxelBattle ? 1 : 0, sShowFps ? 1 : 0, sRunAlways ? 1 : 0, sSpeeds[sSpeed], sDayNight ? 1 : 0);
 }
 
 /*
@@ -104,7 +147,7 @@ void CtrSettings_Load(void)
 static Thread sSaver;
 static LightEvent sSaveWake;
 static LightLock sSaveLock = 1;
-static char sSaveText[256];
+static char sSaveText[160 + EXTRA_KEYS * 32];
 static bool sSavePending, sSaveQuit;
 
 static void WriteText(const char *text)
@@ -155,11 +198,19 @@ static void Save(void)
         return;
 
     snprintf(text, sizeof(text),
-             "voxel=%d\nvoxel_pitch=%d\nvoxel_zoom=%d\nvoxel_blur=%d\nvoxel_battle=%d\nvoxel_stereo=%d\nfps=%d\ndaynight=%d\ntime_offset=%.2f\ndusk_start=%.1f\nnight_start=%.1f\n",
+             "voxel=%d\nvoxel_pitch=%d\nvoxel_zoom=%d\nvoxel_blur=%d\nvoxel_battle=%d\nvoxel_stereo=%d\nfps=%d\nrun=%d\nspeed=%d\ndaynight=%d\ntime_offset=%.2f\ndusk_start=%.1f\nnight_start=%.1f\n",
              sVoxel ? 1 : 0, sPitches[sPitch], sZooms[sZoom], sVoxelBlur ? 1 : 0, sVoxelBattle ? 1 : 0,
              sVoxelStereo ? 1 : 0,
-             sShowFps ? 1 : 0, sDayNight ? 1 : 0,
+             sShowFps ? 1 : 0, sRunAlways ? 1 : 0, sSpeeds[sSpeed], sDayNight ? 1 : 0,
              (float)CtrPlatform_GetTimeOffset() / 3600.0f, sDuskStart, sNightStart);
+
+    for (int i = 0; i < sExtraCount; ++i)
+    {
+        size_t used = strlen(text);
+
+        snprintf(text + used, sizeof(text) - used, "%s=%d\n", sExtra[i].key, sExtra[i].value);
+    }
+
     if (sSaver == NULL)
     {
         s32 priority = 0x30;
@@ -199,6 +250,24 @@ bool CtrSettings_Voxel(void)
     return sVoxel;
 }
 
+int CtrSettings_GetInt(const char *key, int fallback)
+{
+    int index = ExtraIndex(key, false);
+
+    return index >= 0 ? sExtra[index].value : fallback;
+}
+
+void CtrSettings_SetInt(const char *key, int value)
+{
+    int index = ExtraIndex(key, true);
+
+    if (index < 0 || sExtra[index].value == value)
+        return;
+    sExtra[index].value = value;
+    Save();
+    CtrLog_Write(CTR_LOG_FS, "settings: %s=%d", key, value);
+}
+
 void CtrSettings_SetVoxel(bool on)
 {
     if (sVoxel == on)
@@ -233,6 +302,22 @@ void CtrSettings_StepVoxelPitch(int direction)
 void CtrSettings_StepVoxelZoom(int direction)
 {
     Step(&sZoom, COUNT(sZooms), direction);
+}
+
+int CtrSettings_Speed(void)
+{
+    return sSpeeds[sSpeed];
+}
+
+/* The OPTIONS cell wraps round like the others; ZR and ZL stop at the ends. */
+void CtrSettings_StepSpeed(int direction, bool wrap)
+{
+    int next = sSpeed + (direction < 0 ? -1 : 1);
+
+    if (!wrap && (next < 0 || next >= COUNT(sSpeeds)))
+        return;
+    Step(&sSpeed, COUNT(sSpeeds), direction);
+    CtrLog_Write(CTR_LOG_FS, "settings: speed=%d", sSpeeds[sSpeed]);
 }
 
 bool CtrSettings_VoxelBlur(void)
@@ -285,6 +370,19 @@ void CtrSettings_SetShowFps(bool on)
     if (sShowFps == on)
         return;
     sShowFps = on;
+    Save();
+}
+
+bool CtrSettings_RunAlways(void)
+{
+    return sRunAlways;
+}
+
+void CtrSettings_SetRunAlways(bool on)
+{
+    if (sRunAlways == on)
+        return;
+    sRunAlways = on;
     Save();
 }
 

@@ -19,8 +19,7 @@ static void TransitionPicture(void);
 
 static unsigned UsedSlots(void);
 static unsigned BandsFromSlots(unsigned used, unsigned merge);
-static void RenderBands(uint32_t clear);
-static void RenderEye(C3D_RenderTarget *target, float shift, uint32_t clear, bool primary);
-static void RenderFrame(uint32_t clear);
+static void RenderBands(unsigned count, uint32_t backdrop);
+static void RenderEye(C3D_RenderTarget *target, uint32_t clear, float parallax);
 
 #endif /* CTR_VIDEO_COMPOSITOR_H */

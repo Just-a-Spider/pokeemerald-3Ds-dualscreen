@@ -490,105 +490,48 @@ static void BlitBands(C3D_RenderTarget *target, unsigned count, float parallax)
 #define FPS_PIXEL 1.0f
 #define FPS_ADVANCE (4 * FPS_PIXEL)
 
-static const char *GetHudGlyph(char c)
+static const char *const sFpsGlyphs[] =
 {
-    switch (c)
-    {
-    case '0': return "111101101101111";
-    case '1': return "010110010010111";
-    case '2': return "111001111100111";
-    case '3': return "111001111001111";
-    case '4': return "101101111001001";
-    case '5': return "111100111001111";
-    case '6': return "111100111101111";
-    case '7': return "111001001001001";
-    case '8': return "111101111101111";
-    case '9': return "111101111001111";
-    case 'A': case 'a': return "111101111101101";
-    case 'B': case 'b': return "110101110101110";
-    case 'C': case 'c': return "111100100100111";
-    case 'D': case 'd': return "110101101101110";
-    case 'E': case 'e': return "111100111100111";
-    case 'F': case 'f': return "111100110100100";
-    case 'G': case 'g': return "111100101101111";
-    case 'H': case 'h': return "101101111101101";
-    case 'I': case 'i': return "111010010010111";
-    case 'J': case 'j': return "001001001101111";
-    case 'K': case 'k': return "101101110101101";
-    case 'L': case 'l': return "100100100100111";
-    case 'M': case 'm': return "101111101101101";
-    case 'N': case 'n': return "111101101101101";
-    case 'O': case 'o': return "111101101101111";
-    case 'P': case 'p': return "111101111100100";
-    case 'Q': case 'q': return "111101101111001";
-    case 'R': case 'r': return "110101110101101";
-    case 'S': case 's': return "111100111001111";
-    case 'T': case 't': return "111010010010010";
-    case 'U': case 'u': return "101101101101111";
-    case 'V': case 'v': return "101101101101010";
-    case 'W': case 'w': return "101101101111101";
-    case 'X': case 'x': return "101101010101101";
-    case 'Y': case 'y': return "101101010010010";
-    case 'Z': case 'z': return "111001010100111";
-    case ':': return "000010000010000";
-    case '+': return "000010111010000";
-    case '-': return "000000111000000";
-    case '[': return "110100100100110";
-    case ']': return "011001001001011";
-    default: return NULL;
-    }
-}
+    "111101101101111", "010110010010111", "111001111100111", "111001111001111",
+    "101101111001001", "111100111001111", "111100111101111", "111001001001001",
+    "111101111101111", "111101111001111",
+    "111100111100100", /* F */
+    "111101111100100", /* P */
+};
 
 static void DrawFps(C3D_RenderTarget *target)
 {
     unsigned fps = (unsigned)(sStats.fps + 0.5f);
-    bool ff = CtrPlatform_GetFastForward();
-    char line1[32];
-    snprintf(line1, sizeof(line1), "FPS: %u [FF:%s]", fps > 999 ? 999 : fps, ff ? "2X" : "1X");
-    const char *line2 = "Y:VOXEL  R+Y:3D";
-    const char *line3 = "R+START:FF  L+Y:HUD";
+    unsigned glyphs[8], count = 0;
+    char digits[4];
+    int length = snprintf(digits, sizeof(digits), "%u", fps > 999 ? 999 : fps);
 
-    const char *lines[3] = { line1, line2, line3 };
-    int numLines = 3;
+    glyphs[count++] = 10;   /* F */
+    glyphs[count++] = 11;   /* P */
+    glyphs[count++] = 5;    /* S, which is a 5 */
+    glyphs[count++] = ~0u;  /* space */
+    for (int i = 0; i < length; ++i)
+        glyphs[count++] = (unsigned)(digits[i] - '0');
 
-    int maxLen = 0;
-    for (int l = 0; l < numLines; ++l)
-    {
-        int len = (int)strlen(lines[l]);
-        if (len > maxLen) maxLen = len;
-    }
-
+    /* Whatever path composed the frame, the counter draws with the 2D
+     * program and no depth test, as RenderVoxel's UI pass does. */
     C2D_Prepare();
     C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
     BlendForget();
     C2D_SceneBegin(target);
     C2D_ViewReset();
     Blend(5, false, false);
-
-    float boxW = maxLen * FPS_ADVANCE + FPS_PIXEL * 4;
-    float boxH = numLines * 7.0f * FPS_PIXEL + FPS_PIXEL * 3;
-    C2D_DrawRectSolid(2, 2, 0, boxW, boxH, C2D_Color32(0, 0, 0, 160));
-
-    for (int l = 0; l < numLines; ++l)
+    C2D_DrawRectSolid(2, 2, 0, count * FPS_ADVANCE + FPS_PIXEL * 3, 5 * FPS_PIXEL + FPS_PIXEL * 4,
+                      C2D_Color32(0, 0, 0, 160));
+    for (unsigned i = 0; i < count; ++i)
     {
-        const char *str = lines[l];
-        float startY = 2 + FPS_PIXEL * 2 + l * 7.0f * FPS_PIXEL;
-        for (int i = 0; str[i]; ++i)
-        {
-            const char *bits = GetHudGlyph(str[i]);
-            if (!bits) continue;
-            float startX = 2 + FPS_PIXEL * 2 + i * FPS_ADVANCE;
-            for (unsigned p = 0; p < 15; ++p)
-            {
-                if (bits[p] == '1')
-                {
-                    C2D_DrawRectSolid(startX + (p % 3) * FPS_PIXEL,
-                                      startY + (p / 3) * FPS_PIXEL,
-                                      0, FPS_PIXEL, FPS_PIXEL,
-                                      C2D_Color32(255, 255, 255, 255));
-                }
-            }
-        }
+        if (glyphs[i] == ~0u) continue;
+        const char *bits = sFpsGlyphs[glyphs[i]];
+        float x = 2 + FPS_PIXEL * 2 + i * FPS_ADVANCE, y = 2 + FPS_PIXEL * 2;
+        for (unsigned p = 0; p < 15; ++p)
+            if (bits[p] == '1')
+                C2D_DrawRectSolid(x + (p % 3) * FPS_PIXEL, y + (p / 3) * FPS_PIXEL, 0,
+                                  FPS_PIXEL, FPS_PIXEL, C2D_Color32(255, 255, 255, 255));
     }
     C2D_Flush();
 }
@@ -613,7 +556,6 @@ void CtrVideo_HoldTop(bool hold)
 void CtrVideo_Present(void)
 {
     uint64_t entry = svcGetSystemTick();
-    (void)entry;
 
     if (!sMemory.regs) CtrPlatform_Fatal("VIDEO has no logical memory bound");
     /* The PokéNav, the PC's boxes and the bag are drawn on the bottom screen, whether
@@ -753,11 +695,16 @@ void CtrVideo_Present(void)
         sLastBegin = start;
     }
 #endif
-    sStats.tiles = sStats.uploads = sStats.sprites = 0;
+    sStats.tiles = sStats.uploads = sStats.sprites = sStats.cells = 0;
+    sFastUsed = 0;
     sBgTicks = sObjTicks = 0;
     sStats.display = Reg(0);
-    if (sUsed > CACHE_COUNT - 4096) { memset(sHash, 0, sizeof(sHash)); sUsed = 0; }
+    if (sUsed > CACHE_COUNT - 4096) { memset(sHash, 0, sizeof(sHash)); sUsed = 0; ++sCacheGeneration; }
+    PORT_PROF_BEGIN(palette);
+    TrackVram();
     UpdatePalette();
+    KeySectionColours();
+    PORT_PROF_END(palette, PORT_PROF_PALETTE);
     if (sStage || sBattle) RecordScroll();
     /* The shown backdrop, faded: sPalette may hold the unfaded one. */
     uint16_t backdrop = (Reg(0) & 128) ? 0x7fff : sMemory.palette[0] & 0x7fff;
@@ -815,9 +762,10 @@ void CtrVideo_Present(void)
     /* The 2D field centres its text windows as the voxel overlay does. */
     sFieldUi = field && !voxel;
     float slider = osGet3DSliderState();
-    /* Real stereoscopy for 2D layers and 3D voxel world (opt-in on Old 3DS for performance). */
-    bool stereo = !blank && !sBattleWorld && !sTransition && sTopRight && slider > 0.0f
-                  && ((voxel && CtrSettings_VoxelStereo()) || (!voxel && roundf(slider * CTR_STEREO_PIXELS) > 0.0f));
+    /* Real stereoscopy for the voxel world is V8; the layer parallax of the
+     * 2D path means nothing for a 3D scene, so it stays off there. */
+    bool stereo = !voxel && !blank && !sBattleWorld && !sTransition && sTopRight && slider > 0.0f
+                  && roundf(slider * CTR_STEREO_PIXELS) > 0.0f;
     /* A 2D screen composed per eye walks every layer twice, which on an Old
      * 3DS is 30 fps in a menu. Without its planes it stays flat until they
      * can be made (before the next frame, see sBandsWanted). */
@@ -831,7 +779,10 @@ void CtrVideo_Present(void)
     if (bottom) stereo = planes = false;
     if (stereo != sStereo) { gfxSet3D(stereo); sStereo = stereo; }
     sStats.stereo = stereo ? roundf(slider * CTR_STEREO_PIXELS) : 0;
+    PORT_PROF_BEGIN(layers);
     if (!voxel && !blank) LayersRender();
+    PORT_PROF_END(layers, PORT_PROF_LAYERS);
+    PORT_PROF_BEGIN(draw);
 
     if (bottom)
     {
@@ -848,7 +799,7 @@ void CtrVideo_Present(void)
     {
 #if CTR_VOXEL_ENABLED
         sPlanes = 0;
-        RenderVoxel(clear, stereo ? slider : 0.0f);
+        RenderVoxel(clear);
 #endif
     }
     else if (blank)
@@ -891,7 +842,10 @@ void CtrVideo_Present(void)
 #endif
     /* Queued in the frame, behind the drawing into sBottom (BottomTransfer). */
     if (bottom) BottomTransfer();
+    PORT_PROF_END(draw, PORT_PROF_DRAW);
+    PORT_PROF_BEGIN(frameEnd);
     C3D_FrameEnd(0);
+    PORT_PROF_END(frameEnd, PORT_PROF_FRAMEEND);
     ++sStats.frames;
     ++sFpsFrames;
     sStats.cpuMs = (svcGetSystemTick() - start) * 1000.0 / SYSCLOCK_ARM11;
@@ -912,13 +866,13 @@ void CtrVideo_Present(void)
     if (sStats.frames % 600 == 0)
     {
         CtrLog_Write(CTR_LOG_VIDEO, "frames=%lu fps=%.1f cpu=%.2fms bg=%.2fms obj=%.2fms gpu=%.2fms "
-                     "3d=%lupx%s x%lu quads=%lu sprites=%lu errors=%lu cache=%u linear=%lu vram=%lu",
+                     "3d=%lupx%s x%lu quads=%lu cells=%lu sprites=%lu errors=%lu cache=%u linear=%lu vram=%lu",
                      (unsigned long)sStats.frames, sStats.fps, sStats.cpuMs,
                      sBgTicks * 1000.0 / SYSCLOCK_ARM11, sObjTicks * 1000.0 / SYSCLOCK_ARM11,
                      sStats.gpuMs, (unsigned long)sStats.stereo,
                      sStats.stereo ? (sPlanes ? "/planes" : "/eyes") : "", (unsigned long)sPlanes,
-                     (unsigned long)sStats.tiles, (unsigned long)sStats.sprites,
-                     (unsigned long)sStats.errors, sUsed,
+                     (unsigned long)sStats.tiles, (unsigned long)sStats.cells,
+                     (unsigned long)sStats.sprites, (unsigned long)sStats.errors, sUsed,
                      (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree());
 #if CTR_VOXEL_ENABLED
         if (voxel || sBattleWorld)
@@ -938,3 +892,4 @@ void CtrVideo_Present(void)
 #endif
     }
 }
+

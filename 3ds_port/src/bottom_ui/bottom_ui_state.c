@@ -42,14 +42,6 @@ typedef struct
     u8 nick[POKEMON_NAME_LENGTH + 2];
 } MonView;
 
-typedef struct
-{
-    u8 present, side, level, ailment;
-    u16 hp, maxHp, iconSpecies;
-    u8 deoxys, gender;
-    u8 nick[POKEMON_NAME_LENGTH + 2];
-} BattlerView;
-
 /* Everything a redraw reads. Zeroed before every snapshot: memcmp-safe. */
 typedef struct
 {
@@ -79,10 +71,22 @@ typedef struct
     /* Save and options. */
     u8 saveStep, canSave;
     u8 options[OPTION_ROWS];
-    u8 optionScroll;                  /* pixels the options list is scrolled by */
-    /* Battle. */
+    /* The OPTIONS page on show (CTR_EXTRAS_*) and the values of its extras,
+     * in table order. */
+    u8 optPage, optSub;
+    u16 extras[24];
+    /* The column's Y and RUN: the registered item; bit 0 running is the
+     * default, bit 1 the player has the shoes. */
+    u16 registered;
+    u8 run;
+    /* The keyboard focus (X): the column item, or FOCUS_NONE; inside the
+     * options, the option; the ring's blink frame. */
+    u8 focus, optFocus, blink;
+    /* Battle: the cursor is 4 on the quick ball (actions) or CANCEL (moves). */
     u8 isDouble, safari, cursor, battler;
-    BattlerView battlers[MAX_BATTLERS_COUNT];
+    u16 quickBall, quickBallCount;    /* the ball a quick throw would use, ITEM_NONE if none */
+    u8 safariBalls;
+    u8 partyBalls[PARTY_SIZE];        /* PARTY_BALL_*, as the game's party indicator */
     struct ChooseMoveStruct moves4;
     u8 text[96];
 } ViewState;
@@ -105,44 +109,96 @@ static ViewState sState, sShown;
 static bool8 sForceRedraw = TRUE;
 static bool8 sInGame;
 static u8 sScreen = SCR_MAP;
-/* The options list's scroll, in pixels, dragged by the stylus (OptionsDrag). */
-static int sOptionScroll, sOptionScrollStart;
+/*
+ * The options in two columns of six: the game's own on the left in its order,
+ * the port's on the right. A build without the FPS counter or the voxel
+ * renderer has no cell for them; with the voxel overworld off its camera,
+ * blur and battle cells stay where they are, greyed.
+ */
+#define OPT_CELL_W 112
+#define OPT_CELL_H 32
 
-/* Options rows are this far apart; with the port's rows there are more than fit. */
-#define OPTION_PITCH (OPTION_SHOWN > 6 ? 26 : 30)
-/* The frame's preview below the rows: its top, past the last row, and the
- * space it takes. */
-#define OPTION_PREVIEW_GAP 10
-#define OPTION_PREVIEW_H 36
-
-/* The 3D camera, blur and battle rows only with the voxel overworld on. */
-static bool8 OptionRowShown(int row, bool8 voxel)
+static bool8 OptionExists(int row)
 {
-    if (row >= OPTION_SHOWN || (row == OPT_FPS && !CTR_SHOW_FPS))
-        return FALSE;
-    return voxel || (row != OPT_VOXEL_PITCH && row != OPT_VOXEL_ZOOM && row != OPT_VOXEL_BLUR
-                     && row != OPT_VOXEL_BATTLE && row != OPT_VOXEL_STEREO && row != OPT_DAYNIGHT);
+    return row < OPTION_SHOWN && !(row == OPT_FPS && !CTR_SHOW_FPS);
 }
 
-static int OptionRowsShown(bool8 voxel)
+static bool8 OptionLive(int row, bool8 voxel)
 {
-    int rows = 0;
-
-    for (int i = 0; i < OPTION_ROWS; ++i)
-        rows += OptionRowShown(i, voxel);
-    return rows;
+    return OptionExists(row) && (voxel || row < OPT_VOXEL_PITCH);
 }
 
-/* How far the options list can scroll: 0 when every row fits, and the
- * frame's preview with them when it is shown (not with the 3D rows). */
-static int OptionsMaxScroll(bool8 voxel)
-{
-    int height = 4 + OptionRowsShown(voxel) * OPTION_PITCH;
+/* OPTIONS has pages (3ds_extras.h) once any extra exists: a tab strip at the
+ * top and the cells under it, rows a little closer. */
+static u8 sOptPage;
+/* The screen of the tab on show (CTR_EXTRAS_SCREEN). */
+static u8 sOptSub;
+#define CELLS_PER_PAGE 12
 
-    if (!voxel)
-        height += OPTION_PREVIEW_GAP + OPTION_PREVIEW_H;
-    return height > H ? height - H : 0;
+static bool8 OptionPages(void)
+{
+    return gCtrExtraCount > 0;
 }
+
+#define TAB_Y 2
+#define TAB_H 20
+
+static void OptionCell(int row, int *x, int *y)
+{
+    bool8 right = row >= OPT_FPS;
+
+    *x = right ? 124 : 4;
+    *y = OptionPages() ? TAB_Y + TAB_H + 4 + (right ? row - OPT_FPS : row) * 36
+                       : 4 + (right ? row - OPT_FPS : row) * 40;
+}
+
+/* The extra on a page's cell `row` (filled column by column, six to a
+ * column, as the options are), or NULL. */
+/* How many screens a tab's extras take. */
+static unsigned PageSubs(unsigned page)
+{
+    unsigned screens = 1;
+
+    for (unsigned i = 0; i < gCtrExtraCount; ++i)
+        if (CTR_EXTRAS_TAB(gCtrExtras[i].page) == page && (gCtrExtras[i].page >> 4) + 1u > screens)
+            screens = (gCtrExtras[i].page >> 4) + 1;
+    return screens;
+}
+
+static const CtrExtra *PageExtra(unsigned page, unsigned row)
+{
+    unsigned screen = CTR_EXTRAS_SCREEN(page, page == sOptPage ? sOptSub : 0);
+
+    if (row >= CELLS_PER_PAGE)
+        return NULL;
+    for (unsigned i = 0, n = 0; i < gCtrExtraCount; ++i)
+        if (gCtrExtras[i].page == screen && n++ == row)
+            return &gCtrExtras[i];
+    return NULL;
+}
+
+/* What a cell shows, for the redraw to notice a change: its value, or for
+ * one with its own text, a sum of that text. */
+static u16 ExtraShownValue(const CtrExtra *extra)
+{
+    u16 sum = 0;
+
+    if (!extra->text)
+        return extra->step ? CtrSettings_GetInt(extra->key, extra->fallback) : CtrExtras_Value(extra);
+    for (const u8 *c = extra->text(); *c != EOS; ++c)
+        sum = sum * 31 + *c;
+    return sum;
+}
+
+/* The column's keyboard focus (X), and where it is inside a screen. */
+#define FOCUS_NONE 0xFF
+enum { INSIDE_NONE, INSIDE_OPTIONS, INSIDE_SAVE };
+static u8 sFocus = FOCUS_NONE, sInside, sOptFocus;
+/* Leaving the focus, the buttons stay the column's until they are let go:
+ * the B or A that left it must not reach the game. */
+static bool8 sSwallow;
+static u32 sFrames;
+
 static u8 sAnimFrame;
 
 /* Per screen state, kept while another screen is shown. */
@@ -184,9 +240,11 @@ enum
     HIT_TARGET_LEFT = 0x80,
     HIT_TARGET_RIGHT,
     HIT_TARGET_OK,
+    HIT_QUICK_BALL,        /* throw the last ball used */
     HIT_MAP = 0x90,
     HIT_MENU = 0xB0,       /* + game menu entry */
     HIT_OPTION = 0xC0,     /* + option row; +HIT_OPTION_BACK for the left arrow */
+    HIT_PAGE = 0xE0,       /* + OPTIONS page tab */
 };
 /* More than there are option rows, so a row and a left arrow never share an id. */
 #define HIT_OPTION_BACK 16
@@ -207,12 +265,6 @@ static u8 HitTest(int x, int y)
         if (x >= sHits[i].x && y >= sHits[i].y && x < sHits[i].x + sHits[i].w && y < sHits[i].y + sHits[i].h)
             return sHits[i].id;
     return HIT_NONE;
-}
-
-static void DrawButton(int x, int y, int wt, int ht, bool8 on, u8 id)
-{
-    DrawBoxEx(BOX_MENU, x, y, wt, ht, on);
-    AddHit(x, y, wt * 8, ht * 8, id);
 }
 
 static void DrawLabelButtonFont(const Font *font, int x, int y, int wt, int ht, const u8 *label, bool8 on,
@@ -239,12 +291,6 @@ static AnimIcon sAnim[8];
 static u8 sAnimCount;
 /* What was under each animated icon, to redraw its frames in place. */
 static u16 sUnder[8][32 * 32];
-
-static void AddMonIcon(u16 iconSpecies, bool8 deoxys, int x, int y, bool8 still)
-{
-    if (sAnimCount < ARRAY_COUNT(sAnim) && iconSpecies != SPECIES_NONE)
-        sAnim[sAnimCount++] = (AnimIcon){x + sOX, y, iconSpecies, deoxys, still};
-}
 
 static void IconRect(const AnimIcon *icon, int *x0, int *y0, int *x1, int *y1)
 {
@@ -351,6 +397,18 @@ typedef struct
 static BattleAsk sAsk, sAsked;
 static u8 sBattleTap = 0xFF;   /* a tap for the controller to take */
 static bool8 sMoveCancel;      /* the move menu's cursor is on CANCEL */
+static bool8 sQuickBallTap;    /* the ball button was tapped */
+static bool8 sQuickBallFocus;  /* the D-pad is on the ball button (A throws) */
+
+/*
+ * The quick ball (battle_controller_player.c, an optional patch in the
+ * public tree): the ball R or the ball button would throw now, or
+ * ITEM_NONE. Without that patch no battle offers one.
+ */
+u16 __attribute__((weak)) CtrBattle_QuickBallItem(void)
+{
+    return ITEM_NONE;
+}
 
 static u8 CurrentMode(void)
 {
@@ -474,6 +532,17 @@ void CtrBattleMenu_Begin(void)
 {
     sBattleTap = HIT_NONE;
     sMoveCancel = FALSE;
+    sQuickBallTap = FALSE;
+    sQuickBallFocus = FALSE;
+}
+
+/* The ball button, once per tap: the action handler throws the ball. */
+bool8 CtrBattleMenu_TakeQuickBall(void)
+{
+    bool8 tapped = sQuickBallTap;
+
+    sQuickBallTap = FALSE;
+    return tapped;
 }
 
 /* "What will X do?", in the message box: the one thing left on top. */
@@ -503,9 +572,35 @@ void CtrBattleMenu_ActionInput(u8 *cursor, bool8 safari)
 {
     u8 tap = TakeBattleTap(ASK_ACTION), next = *cursor;
     u16 dpad = gMain.newKeys & DPAD_ANY;
+    /* FIGHT on top; BAG, POKéMON and RUN in a row under it. The ball
+     * button, right of FIGHT and over RUN, is reached from both. */
+    bool8 ball = !safari && CtrBattle_QuickBallItem() != ITEM_NONE;
 
-    /* FIGHT on top; BAG, POKéMON and RUN in a row under it. */
     gMain.newKeys &= ~DPAD_ANY;
+    if (!ball)
+        sQuickBallFocus = FALSE;
+    if (sQuickBallFocus)
+    {
+        if (dpad & (DPAD_LEFT | DPAD_DOWN))
+        {
+            sQuickBallFocus = FALSE;
+            next = (dpad & DPAD_LEFT) ? 0 : 3;
+            PlaySE(SE_SELECT);
+            *cursor = next;
+        }
+        else if (gMain.newKeys & A_BUTTON)
+        {
+            gMain.newKeys &= ~A_BUTTON;
+            sQuickBallTap = TRUE;
+        }
+        dpad = 0;
+    }
+    else if (ball && (((dpad & DPAD_RIGHT) && next == 0) || ((dpad & DPAD_UP) && next == 3)))
+    {
+        sQuickBallFocus = TRUE;
+        PlaySE(SE_SELECT);
+        dpad = 0;
+    }
     if (dpad & DPAD_UP)
         next = 0;
     else if ((dpad & DPAD_DOWN) && next == 0)
@@ -519,8 +614,11 @@ void CtrBattleMenu_ActionInput(u8 *cursor, bool8 safari)
         PlaySE(SE_SELECT);
         *cursor = next;
     }
+    if (tap == HIT_QUICK_BALL && !safari)
+        sQuickBallTap = TRUE;
     if (tap >= HIT_ACTION && tap < HIT_ACTION + 4)
     {
+        sQuickBallFocus = FALSE;
         *cursor = tap - HIT_ACTION;
         gMain.newKeys |= A_BUTTON;
     }
@@ -598,6 +696,7 @@ void CtrBattleMenu_TargetInput(void)
 /* Snapshots                                                                */
 /* ------------------------------------------------------------------------ */
 
+#if 0
 static void SnapshotMon(MonView *view, struct Pokemon *mon)
 {
     u16 species = GetMonData(mon, MON_DATA_SPECIES);
@@ -622,13 +721,6 @@ static void SnapshotMon(MonView *view, struct Pokemon *mon)
         view->gender = MON_GENDERLESS;
 }
 
-static void SnapshotParty(ViewState *s)
-{
-    for (int i = 0; i < PARTY_SIZE; ++i)
-        SnapshotMon(&s->party[i], &gPlayerParty[i]);
-}
-
-#if 0
 static void SnapshotSummary(ViewState *s, u8 slot)
 {
     struct Pokemon *mon = &gPlayerParty[slot];
@@ -754,53 +846,40 @@ static void SnapshotCard(ViewState *s)
             s->badges |= 1 << i;
 }
 
-static void SnapshotBattler(BattlerView *v, u8 battler)
-{
-    struct Pokemon *mon;
-
-    if (battler >= gBattlersCount || (gAbsentBattlerFlags & gBitTable[battler]))
-        return;
-    /* Shown once the game shows its healthbox, so nothing is revealed early. */
-    if (gHealthboxSpriteIds[battler] >= MAX_SPRITES || gSprites[gHealthboxSpriteIds[battler]].invisible
-     || !gSprites[gHealthboxSpriteIds[battler]].inUse)
-        return;
-    mon = GetBattlerSide(battler) == B_SIDE_PLAYER ? &gPlayerParty[gBattlerPartyIndexes[battler]]
-                                                   : &gEnemyParty[gBattlerPartyIndexes[battler]];
-    v->present = TRUE;
-    v->side = GetBattlerSide(battler);
-    v->level = gBattleMons[battler].level;
-    v->hp = gBattleMons[battler].hp;
-    v->maxHp = gBattleMons[battler].maxHP;
-    v->iconSpecies = GetIconSpecies(gBattleMons[battler].species, gBattleMons[battler].personality);
-    v->deoxys = gBattleMons[battler].species == SPECIES_DEOXYS;
-    v->gender = GetMonGender(mon);
-    GetMonNickname(mon, v->nick);
-    if (v->hp == 0)
-        v->ailment = AILMENT_FNT;
-    else if (gBattleMons[battler].status1 & STATUS1_SLEEP)
-        v->ailment = AILMENT_SLP;
-    else if (gBattleMons[battler].status1 & STATUS1_PSN_ANY)
-        v->ailment = AILMENT_PSN;
-    else if (gBattleMons[battler].status1 & STATUS1_BURN)
-        v->ailment = AILMENT_BRN;
-    else if (gBattleMons[battler].status1 & STATUS1_FREEZE)
-        v->ailment = AILMENT_FRZ;
-    else if (gBattleMons[battler].status1 & STATUS1_PARALYSIS)
-        v->ailment = AILMENT_PRZ;
-}
+/* The party ball states, as battle_interface.c's party indicator has them. */
+enum { PARTY_BALL_OK, PARTY_BALL_STATUS, PARTY_BALL_FAINT, PARTY_BALL_EMPTY };
 
 static void SnapshotBattle(ViewState *s)
 {
     s->isDouble = (gBattleTypeFlags & BATTLE_TYPE_DOUBLE) != 0;
     s->safari = (gBattleTypeFlags & BATTLE_TYPE_SAFARI) != 0;
-    /* Player left, opponent left, player right, opponent right. */
-    SnapshotBattler(&s->battlers[0], GetBattlerAtPosition(B_POSITION_PLAYER_LEFT));
-    SnapshotBattler(&s->battlers[1], GetBattlerAtPosition(B_POSITION_OPPONENT_LEFT));
-    if (s->isDouble)
+    if (s->mode == MODE_BATTLE_INFO)
+        return;
+    s->blink = (sFrames >> 4) & 1;
+}
+
+/* The six party balls: the mons in party order, then the empty places (an
+ * egg is one, as in the game's indicator). */
+static void SnapshotPartyBalls(ViewState *s)
+{
+    int n = 0;
+
+    for (int i = 0; i < PARTY_SIZE; ++i)
     {
-        SnapshotBattler(&s->battlers[2], GetBattlerAtPosition(B_POSITION_PLAYER_RIGHT));
-        SnapshotBattler(&s->battlers[3], GetBattlerAtPosition(B_POSITION_OPPONENT_RIGHT));
+        struct Pokemon *mon = &gPlayerParty[i];
+        u16 species = GetMonData(mon, MON_DATA_SPECIES_OR_EGG);
+
+        if (species == SPECIES_NONE || species == SPECIES_EGG)
+            continue;
+        if (GetMonData(mon, MON_DATA_HP) == 0)
+            s->partyBalls[n++] = PARTY_BALL_FAINT;
+        else if (GetMonData(mon, MON_DATA_STATUS) != 0)
+            s->partyBalls[n++] = PARTY_BALL_STATUS;
+        else
+            s->partyBalls[n++] = PARTY_BALL_OK;
     }
+    while (n < PARTY_SIZE)
+        s->partyBalls[n++] = PARTY_BALL_EMPTY;
 }
 
 static void CopyText(u8 *dst, int size, const u8 *src)
@@ -879,6 +958,13 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     else if (mode == MODE_STORAGE)
         s->screen = SCR_COUNT;   /* the boxes cover the column */
     StringCopy(s->name, gSaveBlock2Ptr->playerName);
+    /* The column's Y and RUN, and the focus ring on it or in the options. */
+    s->registered = gSaveBlock1Ptr->registeredItem;
+    s->run = (CtrSettings_RunAlways() ? 1 : 0) | (FlagGet(FLAG_SYS_B_DASH) ? 2 : 0);
+    s->focus = sFocus;
+    s->optFocus = FOCUS_NONE;
+    if (sFocus != FOCUS_NONE || sInside == INSIDE_OPTIONS)
+        s->blink = (sFrames >> 4) & 1;
 
     switch (s->mode)
     {
@@ -912,16 +998,22 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
             s->options[4] = gSaveBlock2Ptr->optionsButtonMode;
             s->options[5] = gSaveBlock2Ptr->optionsWindowFrameType;
             s->options[OPT_FPS] = CtrSettings_ShowFps();
+            s->optPage = sOptPage;
+            s->optSub = sOptSub;
+            for (unsigned row = 0; sOptPage != CTR_EXTRAS_OPTIONS && row < ARRAY_COUNT(s->extras); ++row)
+            {
+                const CtrExtra *extra = PageExtra(sOptPage, row);
+
+                if (extra)
+                    s->extras[row] = ExtraShownValue(extra);
+            }
             s->options[OPT_VOXEL] = CtrSettings_Voxel();
             s->options[OPT_VOXEL_PITCH] = CtrSettings_VoxelPitch();
             s->options[OPT_VOXEL_ZOOM] = CtrSettings_VoxelZoom();
             s->options[OPT_VOXEL_BLUR] = CtrSettings_VoxelBlur();
             s->options[OPT_VOXEL_BATTLE] = CtrSettings_VoxelBattle();
-            s->options[OPT_VOXEL_STEREO] = CtrSettings_VoxelStereo();
-            s->options[OPT_DAYNIGHT] = CtrSettings_DayNight();
-            if (sOptionScroll > OptionsMaxScroll(s->options[OPT_VOXEL]))
-                sOptionScroll = OptionsMaxScroll(s->options[OPT_VOXEL]);
-            s->optionScroll = (u8)sOptionScroll;
+            if (sInside == INSIDE_OPTIONS)
+                s->optFocus = sOptFocus;
             break;
         }
         break;
@@ -929,12 +1021,15 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     {
         u8 b = sAsked.battler;
         SnapshotBattle(s);
-        SnapshotParty(s);
+        SnapshotPartyBalls(s);
         s->battler = b;
-        s->cursor = gActionSelectionCursor[b];
-        /* The FIGHT button previews the four move types. */
-        for (int i = 0; i < MAX_MON_MOVES; ++i)
-            s->moves4.moves[i] = gBattleMons[b].moves[i];
+        s->cursor = sQuickBallFocus ? 4 : gActionSelectionCursor[b];
+        if (s->safari)
+            s->safariBalls = gNumSafariBalls;
+        else
+            s->quickBall = CtrBattle_QuickBallItem();
+        if (s->quickBall != ITEM_NONE)
+            s->quickBallCount = CountTotalItemQuantityInBag(s->quickBall);
         break;
     }
     case MODE_BATTLE_MOVE:
@@ -949,7 +1044,6 @@ static void Snapshot(ViewState *s, u8 mode, u8 pressed)
     }
     case MODE_BATTLE_INFO:
         SnapshotBattle(s);
-        SnapshotParty(s);
         break;
     }
 }
@@ -961,13 +1055,14 @@ static bool8 Prefetch(const ViewState *s)
     for (int i = 0; i < PARTY_SIZE && sIconBudget; ++i)
         if (s->party[i].species)
             MonIcon(s->party[i].iconSpecies, s->party[i].deoxys);
-    for (int i = 0; i < MAX_BATTLERS_COUNT && sIconBudget; ++i)
-        if (s->battlers[i].present)
-            MonIcon(s->battlers[i].iconSpecies, s->battlers[i].deoxys);
     if (sIconBudget && s->summary >= 0 && s->heldItem)
         ItemIcon(s->heldItem);
-    if (sIconBudget && s->mode == MODE_BATTLE_ACTION)
-        ItemIcon(ITEM_ESCAPE_ROPE);
+    if (sIconBudget && s->registered != ITEM_NONE && s->mode < MODE_BATTLE_INFO)
+        ItemIcon(s->registered);
+    if (sIconBudget && s->mode == MODE_BATTLE_ACTION && s->quickBall != ITEM_NONE)
+        ItemIcon(s->quickBall);
+    if (sIconBudget && s->mode == MODE_BATTLE_ACTION && s->safari)
+        ItemIcon(ITEM_SAFARI_BALL);
     if (sIconBudget)
     {
         sIconBudget = FALSE;

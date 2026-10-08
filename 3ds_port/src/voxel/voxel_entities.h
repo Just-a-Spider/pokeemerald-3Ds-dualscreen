@@ -22,15 +22,11 @@
 #include "voxel_camera.h"
 #include "voxel_mesh_builder.h"
 
-/* 16 slots for gObjectEvents[] + 1 for door + 2 for Pokecenter heal in 512x512 texture. */
-#define VOXEL_SPRITE_ATLAS_DIM  512u
+/* 16 slots of 64x64, one per gObjectEvents[], in a 256x256 RGBA5551 texture. */
+#define VOXEL_SPRITE_ATLAS_DIM  256u
 #define VOXEL_SPRITE_SLOT_DIM   64u
 #define VOXEL_SPRITE_COLUMNS    (VOXEL_SPRITE_ATLAS_DIM / VOXEL_SPRITE_SLOT_DIM)
 #define VOXEL_SPRITE_SLOTS      16u
-#define VOXEL_DOOR_SLOT         16u
-#define VOXEL_HEAL_BALL_SLOT    17u
-#define VOXEL_HEAL_MONITOR_SLOT 18u
-#define VOXEL_TOTAL_SLOTS       (VOXEL_SPRITE_SLOTS + 3u)
 #define VOXEL_SPRITE_PIXELS     (VOXEL_SPRITE_ATLAS_DIM * VOXEL_SPRITE_ATLAS_DIM)
 #define VOXEL_CAST_SHADOW_VERTICES 6u
 #define VOXEL_REFLECTION_VERTICES 6u

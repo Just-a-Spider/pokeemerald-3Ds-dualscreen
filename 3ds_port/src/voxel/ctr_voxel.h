@@ -33,6 +33,13 @@ void CtrVoxel_SetBrightness(float backgrounds, float sprites, bool white);
 /* How much glow the 2D compositor adds around the brightest parts of the
  * voxel picture this frame (0: none): the light's bloom, 0 indoors. */
 float CtrVoxel_Bloom(void);
+/* Whether the world draws the game's fog itself (in the scene, see
+ * ctr_voxel.c): the compositor then leaves the fog's flat sprites out. */
+bool CtrVoxel_DrawsFog(void);
+/* The dark of a cave over the frame just drawn: an alpha texture to lay in
+ * black, centred on (x, y) of the logical surface, size pixels across, at
+ * amount. NULL when there is none. */
+const C3D_Tex *CtrVoxel_Gloom(float *x, float *y, float *size, float *amount);
 
 typedef struct
 {
@@ -100,6 +107,14 @@ unsigned long CtrVoxel_ReleaseIdleVram(void);
 bool CtrVoxel_IsWarmingUp(void);
 
 /*
+ * Where the camera shows a point of the 240x160 picture the game lays out
+ * around the player: `tileX`, `tileY` are tiles from the player's tile
+ * centre (right, down), the point standing a tile up in the air - the top of
+ * a counter. The result is on the 400x240 screen. False without a world.
+ */
+bool CtrVoxel_ProjectPictureTile(float tileX, float tileY, float *screenX, float *screenY);
+
+/*
  * The 3D battle (3ds_video.c, RenderBattleWorld). From Begin to End, Update
  * draws the world as the battle's scenery: seen from a camera of its own on
  * a stage chosen near the player (voxel_battle.c), with nobody in it. Begin
@@ -115,8 +130,8 @@ bool CtrVoxel_InBattle(void);
  * GBA pixels (a move shaking the scenery shakes the camera). */
 void CtrVoxel_SetBattleFrame(bool introSliding, float shakeX, float shakeY);
 
-/* Camera rotation and direction mapping */
 float CtrVoxel_GetCameraYaw(void);
 int CtrVoxel_GetCameraQuadrant(void);
+void CtrVoxel_InvalidateTreeQuadrant(void);
 
 #endif

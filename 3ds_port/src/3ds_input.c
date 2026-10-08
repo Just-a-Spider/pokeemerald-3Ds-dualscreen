@@ -25,6 +25,12 @@ void CtrInput_Scan(void)
     CtrInputSample sample = {0};
     hidScanInput();
     uint32_t raw = hidKeysHeld();
+    /* New 3DS: ZR and ZL step the fast-forward speed (OPTIONS has it too). */
+    uint32_t down = hidKeysDown();
+    if (down & KEY_ZR)
+        CtrSettings_StepSpeed(1, false);
+    if (down & KEY_ZL)
+        CtrSettings_StepSpeed(-1, false);
     for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i)
         if (raw & keys[i])
             sample.buttons |= 1u << i;

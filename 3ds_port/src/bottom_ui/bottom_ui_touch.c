@@ -42,6 +42,13 @@ static void StartPlan(u8 kind, s16 target)
     sQueued = 0;
 }
 
+/* One press of keys, as the player's own: the column's Y is SELECT. */
+static void PressOnce(u16 keys)
+{
+    StartPlan(PLAN_PRESS, 0);
+    sPlan.keys = keys;
+}
+
 #if 0 /* only the old party menu queued plans or pressed keys */
 static void QueuePlan(Plan p)
 {
@@ -126,8 +133,9 @@ static void RunPlan(void)
     sInjected = 0;
     if (sPlan.kind == PLAN_NONE)
         return;
-    /* The player's own buttons always win. */
-    if (CtrInput_Get()->held & CTR_KEY_GAME)
+    /* The player's own buttons always win; not those the column holds back
+     * (CtrBottom_FilterKeys), as the A that chose BAG while it opens. */
+    if (CtrBottom_FilterKeys(CtrInput_Get()->held) & CTR_KEY_GAME)
     {
         CancelPlan();
         return;
@@ -545,18 +553,6 @@ static void NavSwipe(int dy)
 /* What a tap does                                                          */
 /* ------------------------------------------------------------------------ */
 
-/* A drag up or down the options list scrolls it, within its length. */
-static void OptionsDrag(int dy)
-{
-    int max = OptionsMaxScroll(CtrSettings_Voxel());
-
-    sOptionScroll = sOptionScrollStart - dy;
-    if (sOptionScroll < 0)
-        sOptionScroll = 0;
-    if (sOptionScroll > max)
-        sOptionScroll = max;
-}
-
 static struct
 {
     bool8 active, dragged;
@@ -677,14 +673,58 @@ static void ActivatePokemon(u8 id, u8 mode)
 
 #endif
 
+static void ShowOptionSub(u8 page, u8 sub)
+{
+    if (page == sOptPage && sub == sOptSub)
+        return;
+    sOptPage = page;
+    sOptSub = sub;
+    sOptFocus = sOptPage == CTR_EXTRAS_OPTIONS ? OPT_TEXT_SPEED : 0;
+    PlaySE(SE_SELECT);
+}
+
+void CtrExtras_ShowScreen(unsigned page, unsigned screen)
+{
+    if (page < CTR_EXTRAS_PAGES && screen < PageSubs(page))
+        ShowOptionSub(page, screen);
+}
+
+/* A tab: its page, or on the page on show its next screen. */
+static void ShowOptionPage(u8 page)
+{
+    if (page != CTR_EXTRAS_OPTIONS && !CtrExtras_PageUsed(page))
+        return;
+    if (page == sOptPage)
+        ShowOptionSub(page, (sOptSub + 1) % PageSubs(page));
+    else
+        ShowOptionSub(page, 0);
+}
+
 static void ActivateOption(u8 id)
 {
     bool8 back = id >= HIT_OPTION + HIT_OPTION_BACK;
     u8 row = (id - HIT_OPTION) % HIT_OPTION_BACK;
-    static const u8 counts[OPTION_ROWS] = {3, 2, 2, 2, 3, WINDOW_FRAMES_COUNT, 2, 2, 0, 0, 2, 2, 2};
+
+    if (sOptPage != CTR_EXTRAS_OPTIONS)
+    {
+        const CtrExtra *extra = PageExtra(sOptPage, row);
+
+        if (extra)
+        {
+            if (extra->step)
+                extra->step(back ? -1 : 1);
+            else
+                CtrExtras_Step(extra, back ? -1 : 1);
+            /* An action plays its own sound (done, or not possible). */
+            if (extra->count || extra->step)
+                PlaySE(SE_SELECT);
+        }
+        return;
+    }
+    static const u8 counts[OPTION_ROWS] = {3, 2, 2, 2, 3, WINDOW_FRAMES_COUNT, 2, 2, 0, 0, 2, 2};
     u8 value, step = back ? counts[row] - 1 : 1;
 
-    if (!OptionRowShown(row, TRUE))
+    if (!OptionLive(row, CtrSettings_Voxel()))
         return;
     if (row == OPT_FPS)
     {
@@ -711,22 +751,6 @@ static void ActivateOption(u8 id)
         if (!CtrSettings_Voxel())
             return;
         CtrSettings_SetVoxelBattle(!CtrSettings_VoxelBattle());
-        PlaySE(SE_SELECT);
-        return;
-    }
-    if (row == OPT_VOXEL_STEREO)
-    {
-        if (!CtrSettings_Voxel())
-            return;
-        CtrSettings_SetVoxelStereo(!CtrSettings_VoxelStereo());
-        PlaySE(SE_SELECT);
-        return;
-    }
-    if (row == OPT_DAYNIGHT)
-    {
-        if (!CtrSettings_Voxel())
-            return;
-        CtrSettings_SetDayNight(!CtrSettings_DayNight());
         PlaySE(SE_SELECT);
         return;
     }
@@ -818,6 +842,22 @@ static void Activate(u8 id, u8 mode)
         return;
     }
 
+    /* Y: SELECT in the field, the registered item. RUN: running by default. */
+    if (id == HIT_COLUMN + COL_Y)
+    {
+        if (mode == MODE_FIELD && FieldIdle() && gSaveBlock1Ptr->registeredItem != ITEM_NONE)
+            PressOnce(SELECT_BUTTON);
+        return;
+    }
+    if (id == HIT_COLUMN + COL_RUN)
+    {
+        if (FlagGet(FLAG_SYS_B_DASH))
+        {
+            CtrSettings_SetRunAlways(!CtrSettings_RunAlways());
+            PlaySE(SE_SELECT);
+        }
+        return;
+    }
     if (id >= HIT_COLUMN && id < HIT_COLUMN + SCR_COUNT)
     {
         u8 screen = id - HIT_COLUMN;
@@ -914,7 +954,9 @@ static void Activate(u8 id, u8 mode)
         }
         break;
     case SCR_OPTION:
-        if (id >= HIT_OPTION && id < HIT_OPTION + 2 * HIT_OPTION_BACK)
+        if (id >= HIT_PAGE && id < HIT_PAGE + CTR_EXTRAS_PAGES)
+            ShowOptionPage(id - HIT_PAGE);
+        else if (id >= HIT_OPTION && id < HIT_OPTION + 2 * HIT_OPTION_BACK)
             ActivateOption(id);
         break;
     }
@@ -985,7 +1027,6 @@ static u8 ProcessTouch(u8 mode)
         sTouch.startX = sTouch.lastX = in->touchX;
         sTouch.startY = sTouch.lastY = in->touchY;
         sTouch.pressed = HitTest(in->touchX, in->touchY);
-        sOptionScrollStart = sOptionScroll;
     }
     else if (in->touchActive && sTouch.active)
     {
@@ -995,8 +1036,6 @@ static u8 ProcessTouch(u8 mode)
         sTouch.lastY = in->touchY;
         if (!sTouch.dragged && (dy > 8 || dy < -8 || dx > 8 || dx < -8))
             sTouch.dragged = TRUE;
-        if (sTouch.dragged && sScreen == SCR_OPTION && sTouch.startX < CW)
-            OptionsDrag(dy);
     }
     else if (in->touchUp && sTouch.active)
     {
@@ -1034,6 +1073,14 @@ static u8 ProcessTouch(u8 mode)
                 NavSwipe(sTouch.lastY - sTouch.startY);
             return HIT_NONE;
         }
+        /* While the turn plays out the screen is the backdrop: a tap on it is
+         * A, on with the text. */
+        if (mode == MODE_BATTLE_INFO)
+        {
+            if (!sTouch.dragged)
+                PressOnce(A_BUTTON);
+            return HIT_NONE;
+        }
         if ((!sTouch.dragged || sTouch.pressed == HIT_MAP) && HitTest(sTouch.lastX, sTouch.lastY) == sTouch.pressed)
             Activate(sTouch.pressed, mode);
         return HIT_NONE;
@@ -1041,5 +1088,262 @@ static u8 ProcessTouch(u8 mode)
     if (!sTouch.active || sTouch.dragged)
         return HIT_NONE;
     return sTouch.pressed;
+}
+
+/* ------------------------------------------------------------------------ */
+/* The column by the buttons (X)                                            */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * X gives the column a focus ring: the D-pad walks it over the buttons (down
+ * from OPTION to Y, left and right between Y and RUN), A does what a tap
+ * would, B or X again gives the buttons back to the game. While the column
+ * has them the game sees none, so the player stands still. Opened with A,
+ * the options take the focus into their grid (up and down through the
+ * options, left and right or A to change one, B back to the column) and the
+ * save screen takes A for YES and B for NO; the game's own screens (party,
+ * bag, Pokédex, PokéNav) take the buttons themselves, and X inside them
+ * brings the ring back to the column to go somewhere else.
+ */
+uint16_t CtrBottom_FilterKeys(uint16_t held)
+{
+    return sFocus != FOCUS_NONE || sInside != INSIDE_NONE || sSwallow ? 0 : held;
+}
+
+/* Whether the column is on screen: not in battle, not under the boxes or
+ * the bag or party menu that a battle, a shop or the PC opens. */
+static bool8 ColumnShown(u8 mode)
+{
+    if (gMain.inBattle)
+        return FALSE;
+    switch (mode)
+    {
+    case MODE_FIELD:
+    case MODE_POKENAV:
+    case MODE_POKEDEX:
+        return TRUE;
+    case MODE_PARTY_MENU:
+        return gPartyMenu.menuType == PARTY_MENU_TYPE_FIELD;
+    case MODE_BAG_MENU:
+        return gBagPosition.location == ITEMMENULOCATION_FIELD;
+    }
+    return FALSE;
+}
+
+static bool8 ColumnItemAvailable(u8 item)
+{
+    if (item < SCR_COUNT)
+        return (EnabledScreens() >> item) & 1;
+    if (item == COL_Y)
+        return gSaveBlock1Ptr->registeredItem != ITEM_NONE;
+    return FlagGet(FLAG_SYS_B_DASH);
+}
+
+/* The next available item up (dir < 0) or down the column, or `from`. */
+static u8 ColumnStep(u8 from, int dir)
+{
+    if (from >= COL_Y)
+    {
+        if (dir > 0)
+            return from;
+        for (int i = SCR_COUNT - 1; i >= 0; --i)
+            if (ColumnItemAvailable(i))
+                return i;
+        return from;
+    }
+    for (int i = from + dir; i >= 0 && i < SCR_COUNT; i += dir)
+        if (ColumnItemAvailable(i))
+            return i;
+    if (dir > 0)
+    {
+        if (ColumnItemAvailable(COL_Y))
+            return COL_Y;
+        if (ColumnItemAvailable(COL_RUN))
+            return COL_RUN;
+    }
+    return from;
+}
+
+/* The next option up or down the grid's reading order (the left column,
+ * then the right), or `from`. */
+static u8 OptionStep(u8 from, int dir)
+{
+    bool8 voxel = CtrSettings_Voxel();
+
+    if (sOptPage != CTR_EXTRAS_OPTIONS)
+    {
+        int to = from + dir;
+
+        return to >= 0 && PageExtra(sOptPage, to) ? to : from;
+    }
+
+    for (int i = from + dir; i >= 0 && i < OPTION_ROWS; i += dir)
+        if (OptionLive(i, voxel))
+            return i;
+    return from;
+}
+
+static void MoveFocus(u8 *focus, u8 to)
+{
+    if (to != *focus)
+    {
+        *focus = to;
+        PlaySE(SE_SELECT);
+    }
+}
+
+/* Gives the buttons back to the game once they are let go. */
+static void LeaveFocus(void)
+{
+    sFocus = FOCUS_NONE;
+    sInside = INSIDE_NONE;
+    sSwallow = TRUE;
+}
+
+/* A on a column item: what a tap on it does, and where the focus goes. */
+static void ChooseColumnItem(u8 mode, u8 item)
+{
+    bool8 gameScreen = item == SCR_POKEMON || item == SCR_BAG || item == SCR_POKEDEX || item == SCR_POKENAV;
+
+    if (item == COL_RUN)
+    {
+        Activate(HIT_COLUMN + COL_RUN, mode);
+        return;
+    }
+    if (item == COL_Y)
+    {
+        LeaveFocus();
+        Activate(HIT_COLUMN + COL_Y, mode);
+        return;
+    }
+    /* The game's screen on show already: back to it. */
+    if (gameScreen && item == sShown.screen && mode != MODE_FIELD)
+    {
+        LeaveFocus();
+        return;
+    }
+    Activate(HIT_COLUMN + item, mode);
+    if (gameScreen)
+        LeaveFocus();
+    else if (item == SCR_OPTION || item == SCR_SAVE)
+    {
+        sFocus = FOCUS_NONE;
+        sInside = item == SCR_OPTION ? INSIDE_OPTIONS : INSIDE_SAVE;
+        if (item == SCR_OPTION && sOptPage == CTR_EXTRAS_OPTIONS && !OptionLive(sOptFocus, CtrSettings_Voxel()))
+            sOptFocus = OPT_TEXT_SPEED;
+    }
+}
+
+static void OptionKeys(u16 down)
+{
+    if (down & B_BUTTON)
+    {
+        sInside = INSIDE_NONE;
+        sFocus = SCR_OPTION;
+        PlaySE(SE_SELECT);
+    }
+    else if (down & DPAD_UP)
+        MoveFocus(&sOptFocus, OptionStep(sOptFocus, -1));
+    else if (down & DPAD_DOWN)
+        MoveFocus(&sOptFocus, OptionStep(sOptFocus, 1));
+    else if (down & (L_BUTTON | R_BUTTON))
+    {
+        int dir = (down & R_BUTTON) ? 1 : -1;
+
+        if ((dir > 0 && sOptSub + 1 < (int)PageSubs(sOptPage)) || (dir < 0 && sOptSub > 0))
+            ShowOptionSub(sOptPage, sOptSub + dir);
+        else
+            for (int page = sOptPage + dir; page >= 0 && page < CTR_EXTRAS_PAGES; page += dir)
+                if (page == CTR_EXTRAS_OPTIONS || CtrExtras_PageUsed(page))
+                {
+                    ShowOptionSub(page, dir > 0 ? 0 : PageSubs(page) - 1);
+                    break;
+                }
+    }
+    else if (down & DPAD_LEFT)
+        ActivateOption(HIT_OPTION + HIT_OPTION_BACK + sOptFocus);
+    else if (down & (DPAD_RIGHT | A_BUTTON))
+        ActivateOption(HIT_OPTION + sOptFocus);
+}
+
+static void SaveKeys(u8 mode, u16 down)
+{
+    if (down & A_BUTTON)
+        Activate(sSaveStep == SAVE_DONE ? HIT_OK : HIT_YES, mode);
+    else if (down & B_BUTTON)
+        Activate(sSaveStep == SAVE_DONE ? HIT_OK : HIT_NO, mode);
+    /* Done or declined, the screen goes back to the map: so does the focus,
+     * to the column. */
+    if (sScreen != SCR_SAVE)
+    {
+        sInside = INSIDE_NONE;
+        sFocus = sScreen;
+    }
+}
+
+static void ProcessKeys(u8 mode)
+{
+    const CtrInput *in = CtrInput_Get();
+    u16 down = in->down;
+    bool8 x = (in->physicalDown & CTR_KEY_X) != 0;
+
+    if (sSwallow && !(in->held & CTR_KEY_GAME) && !(in->physicalHeld & (CTR_KEY_X | CTR_KEY_Y)))
+        sSwallow = FALSE;
+    if (!ColumnShown(mode))
+    {
+        if (sFocus != FOCUS_NONE || sInside != INSIDE_NONE)
+            LeaveFocus();
+        return;
+    }
+    /* A tap took the screen elsewhere. */
+    if ((sInside == INSIDE_OPTIONS && sScreen != SCR_OPTION) || (sInside == INSIDE_SAVE && sScreen != SCR_SAVE))
+    {
+        sInside = INSIDE_NONE;
+        sFocus = sScreen;
+    }
+    if (sInside != INSIDE_NONE)
+    {
+        if (x)
+        {
+            sInside = INSIDE_NONE;
+            sFocus = sScreen;
+            PlaySE(SE_SELECT);
+        }
+        else if (sInside == INSIDE_OPTIONS)
+            OptionKeys(down);
+        else
+            SaveKeys(mode, down);
+        return;
+    }
+    if (sFocus == FOCUS_NONE)
+    {
+        /* Not in the middle of a script or a field effect. */
+        if (!x || (mode == MODE_FIELD && (gMain.callback2 != CB2_Overworld || ArePlayerFieldControlsLocked()
+                                          || ScriptContext_IsEnabled())))
+            return;
+        sFocus = sShown.screen < SCR_COUNT && ColumnItemAvailable(sShown.screen) ? sShown.screen : SCR_MAP;
+        PlaySE(SE_SELECT);
+        return;
+    }
+    if (!ColumnItemAvailable(sFocus))
+        sFocus = SCR_MAP;
+    if (x || (down & B_BUTTON))
+    {
+        LeaveFocus();
+        PlaySE(SE_SELECT);
+    }
+    else if (down & DPAD_UP)
+        MoveFocus(&sFocus, ColumnStep(sFocus, -1));
+    else if (down & DPAD_DOWN)
+        MoveFocus(&sFocus, ColumnStep(sFocus, 1));
+    else if ((down & (DPAD_LEFT | DPAD_RIGHT)) && sFocus >= COL_Y)
+    {
+        u8 other = sFocus == COL_Y ? COL_RUN : COL_Y;
+
+        if (ColumnItemAvailable(other))
+            MoveFocus(&sFocus, other);
+    }
+    else if (down & A_BUTTON)
+        ChooseColumnItem(mode, sFocus);
 }
 
