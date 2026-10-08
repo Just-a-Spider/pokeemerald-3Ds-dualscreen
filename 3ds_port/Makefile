@@ -154,6 +154,17 @@ endif
 $(TARGET).3dsx: build/$(TARGET)_3dsx.elf $(TARGET).smdh romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin $(EMBED_MARKER)
 	$(DEVKITPRO)/tools/bin/3dsxtool $< $@ --smdh=$(TARGET).smdh --romfs=romfs
 
+# Prefer custom project assets (assets/app.rsf, assets/banner.bin, assets/icon.bin) over upstream defaults
+PROJECT_ASSETS := $(firstword $(wildcard $(ROOT)/assets) $(wildcard $(CURDIR)/../../../assets) $(wildcard $(CURDIR)/../../assets) $(wildcard $(CURDIR)/../assets))
+CUSTOM_RSF := $(wildcard $(PROJECT_ASSETS)/app.rsf)
+CUSTOM_BANNER := $(wildcard $(PROJECT_ASSETS)/banner.bin)
+CUSTOM_ICON := $(wildcard $(PROJECT_ASSETS)/icon.bin)
+
+RSF ?= $(if $(CUSTOM_RSF),$(CUSTOM_RSF),emerald3ds.rsf)
+BANNER ?= $(if $(CUSTOM_BANNER),$(CUSTOM_BANNER),build/banner.bnr)
+ICON ?= $(if $(CUSTOM_ICON),$(CUSTOM_ICON),build/icon.smdh)
+MAKEROM_FLAGS := $(if $(CUSTOM_RSF),-desc app:7,)
+
 build/banner.bnr: assets/artwork/banner.png assets/artwork/banner-sound.wav
 	@mkdir -p build
 	$(BANNERTOOL) makebanner -i assets/artwork/banner.png -a assets/artwork/banner-sound.wav -o $@
@@ -162,14 +173,12 @@ build/icon.smdh: assets/artwork/icon.png Makefile
 	@mkdir -p build
 	$(BANNERTOOL) makesmdh -s "$(APP_SHORT)" -l "$(APP_TITLE)" -p "$(APP_AUTHOR)" -i assets/artwork/icon.png -o $@
 
-$(TARGET).cia: $(TARGET).elf build/banner.bnr build/icon.smdh emerald3ds.rsf romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin $(EMBED_MARKER)
-	$(MAKEROM) -f cia -o $@ -target t -exefslogo -rsf emerald3ds.rsf \
+$(TARGET).cia: $(TARGET).elf $(BANNER) $(ICON) $(RSF) romfs/boot.txt $(ROMFS_DATA_OUTS) romfs/engine/abi.bin $(EMBED_MARKER)
+	$(MAKEROM) -f cia -o $@ -target t -exefslogo $(MAKEROM_FLAGS) -rsf $(RSF) \
 		-elf $< \
-		-banner build/banner.bnr \
-		-icon build/icon.smdh \
-		-major $(word 1,$(subst ., ,$(APP_VERSION))) \
-		-minor $(word 2,$(subst ., ,$(APP_VERSION))) \
-		-micro $(word 3,$(subst ., ,$(APP_VERSION)))
+		-banner $(BANNER) \
+		-icon $(ICON) \
+		$(if $(CUSTOM_RSF),,-major $(word 1,$(subst ., ,$(APP_VERSION))) -minor $(word 2,$(subst ., ,$(APP_VERSION))) -micro $(word 3,$(subst ., ,$(APP_VERSION))))
 
 # Release: the executable with engine files only. Its game data is the data
 # pack the player's builder generates.
