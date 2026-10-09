@@ -213,6 +213,7 @@ bool CtrPlatform_BeginFrame(void)
     else sExitStart = 0;
     if (input->resetDown)
         CtrPlatform_RequestReset();
+
     if (sReset)
     {
         sReset = false;
@@ -225,17 +226,34 @@ bool CtrPlatform_BeginFrame(void)
     return true;
 }
 
+static char sToastMsg[32] = {0};
+static unsigned sToastRemaining = 0;
+
+void CtrPlatform_ShowToast(const char *msg)
+{
+    if (msg != NULL)
+    {
+        snprintf(sToastMsg, sizeof(sToastMsg), "%s", msg);
+        sToastRemaining = 90; /* 1.5s at 60fps */
+    }
+}
+
+const char *CtrPlatform_GetToast(void)
+{
+    if (sToastRemaining > 0)
+    {
+        --sToastRemaining;
+        return sToastMsg;
+    }
+    return NULL;
+}
+
 /*
  * Fast-forward (CtrSettings_Speed). Of every `speed` game frames only the last
  * is presented and waits for the display; the others run back to back. Only
  * a presented frame ticks the sound engine (CtrPlatform_SoundTick), so music
- * and effects keep their speed while the game runs faster. A frame is also
- * presented as soon as one more hidden frame and the present would no longer
- * fit in the display's frame: the game then runs as fast as the console
- * allows (an Old 3DS less than a New 3DS at 804 MHz) and the picture and the
- * sound stay at 60 Hz.
+ * and effects keep their speed while the game runs faster.
  */
-#define FRAME_MS (1000.0f / 60)
 static bool sSoundTick = true;
 static unsigned sHidden;
 static uint64_t sShownTick;
@@ -243,10 +261,10 @@ static float sPresentMs = 4.0f;
 
 static bool FrameShown(uint64_t now)
 {
+    (void)now;
     int speed = CtrSettings_Speed();
-    float since = sShownTick ? (now - sShownTick) * 1000.0f / SYSCLOCK_ARM11 : FRAME_MS;
 
-    if (speed <= 1 || ++sHidden >= (unsigned)speed || since + sTiming.gameMs + sPresentMs > FRAME_MS)
+    if (speed <= 1 || ++sHidden >= (unsigned)speed)
     {
         sHidden = 0;
         return true;
@@ -528,4 +546,9 @@ uint8_t CtrVoxel_ToCameraRelativeDirection(uint8_t direction)
     if (direction <= 8)
         return sCamRel[q][direction];
     return direction;
+}
+
+uint8_t Port_ToCameraRelativeDirection(uint8_t direction)
+{
+    return CtrVoxel_ToCameraRelativeDirection(direction);
 }

@@ -1281,11 +1281,13 @@ static void SaveKeys(u8 mode, u16 down)
     }
 }
 
+bool CtrChords_ConsumeStartToggle(void);
+
 static void ProcessKeys(u8 mode)
 {
     const CtrInput *in = CtrInput_Get();
     u16 down = in->down;
-    bool8 x = (in->physicalDown & CTR_KEY_X) != 0;
+    bool8 startToggle = CtrChords_ConsumeStartToggle();
 
     if (sSwallow && !(in->held & CTR_KEY_GAME) && !(in->physicalHeld & (CTR_KEY_X | CTR_KEY_Y)))
         sSwallow = FALSE;
@@ -1303,7 +1305,7 @@ static void ProcessKeys(u8 mode)
     }
     if (sInside != INSIDE_NONE)
     {
-        if (x)
+        if (startToggle)
         {
             sInside = INSIDE_NONE;
             sFocus = sScreen;
@@ -1318,7 +1320,7 @@ static void ProcessKeys(u8 mode)
     if (sFocus == FOCUS_NONE)
     {
         /* Not in the middle of a script or a field effect. */
-        if (!x || (mode == MODE_FIELD && (gMain.callback2 != CB2_Overworld || ArePlayerFieldControlsLocked()
+        if (!startToggle || (mode == MODE_FIELD && (gMain.callback2 != CB2_Overworld || ArePlayerFieldControlsLocked()
                                           || ScriptContext_IsEnabled())))
             return;
         sFocus = sShown.screen < SCR_COUNT && ColumnItemAvailable(sShown.screen) ? sShown.screen : SCR_MAP;
@@ -1327,7 +1329,7 @@ static void ProcessKeys(u8 mode)
     }
     if (!ColumnItemAvailable(sFocus))
         sFocus = SCR_MAP;
-    if (x || (down & B_BUTTON))
+    if (startToggle || (down & B_BUTTON))
     {
         LeaveFocus();
         PlaySE(SE_SELECT);

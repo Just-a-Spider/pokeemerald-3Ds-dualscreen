@@ -79,6 +79,7 @@ PROF_WRAPPED := RunTasks AnimateSprites BuildOamBuffer ProcessDma3Requests \
 # The sound engine runs on a worker core; its entry points take the worker's
 # lock (src/3ds_sound.c).
 BACKEND_SRCS += src/3ds_sound.c
+BACKEND_SRCS += src/input/3ds_input_chords.c
 SOUND_WRAPPED := m4aSoundVSync m4aSoundMain m4aSoundInit m4aSoundMode m4aSoundVSyncOn m4aSoundVSyncOff \
 	m4aSongNumStart m4aSongNumStartOrChange m4aSongNumStartOrContinue m4aSongNumStop m4aSongNumContinue \
 	m4aMPlayAllStop m4aMPlayAllContinue m4aMPlayStop m4aMPlayContinue m4aMPlayFadeOut \
@@ -100,10 +101,13 @@ VOXEL_GAME_SRCS := src/voxel/voxel_world.c src/voxel/voxel_camera.c \
 	src/voxel/voxel_atlas.c src/voxel/voxel_mesh_builder.c src/voxel/voxel_entities.c \
 	src/voxel/voxel_regions.c src/voxel/voxel_tree.c src/voxel/voxel_sign.c \
 	src/voxel/voxel_building.c src/voxel/voxel_relief.c \
-	src/voxel/voxel_arena.c src/voxel/voxel_grade.c src/voxel/voxel_battle.c
+	src/voxel/voxel_arena.c src/voxel/voxel_grade.c src/voxel/voxel_battle.c \
+	src/voxel/voxel_lighting_custom.c src/voxel/voxel_sprite_dir.c
 ifeq ($(VOXEL_LIGHTING),1)
 VOXEL_GAME_SRCS += src/voxel/voxel_lighting.c
 endif
+VOXEL_WRAPPED := SetStepAnim SetStepAnimHandleAlternation StartSpriteAnim StartSpriteAnimIfDifferent
+LDFLAGS += $(foreach f,$(VOXEL_WRAPPED),-Wl,--wrap=$(f))
 VOXEL_GAME_OBJS := $(patsubst src/voxel/%.c,build/voxel/%.o,$(VOXEL_GAME_SRCS))
 BACKEND_OBJS += $(VOXEL_GAME_OBJS) build/ctr_voxel.o
 ROMFS_SHADER_OUTS := romfs/shaders/voxel.shbin romfs/voxel/regions.bin

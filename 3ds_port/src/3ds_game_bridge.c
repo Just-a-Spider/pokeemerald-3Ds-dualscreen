@@ -34,16 +34,16 @@ void CtrEmu_EndVBlank(void)
     REG_VCOUNT = 0;
 }
 
+void CtrChords_Update(void);
+uint16_t CtrChords_FilterGbaKeys(uint16_t held);
+
 u16 Platform_GetKeyInput(void)
 {
     const CtrInput *input = CtrInput_Get();
-    u16 held = input->held;
+    CtrChords_Update();
+    u16 held = CtrChords_FilterGbaKeys(input->held);
 
-    /* Y is the 3DS's own SELECT: the registered item, as the bottom screen's
-     * Y button says. */
-    if (input->physicalHeld & CTR_KEY_Y)
-        held |= SELECT_BUTTON;
-    /* The bottom screen's column takes the buttons while X has its focus;
+    /* The bottom screen's column takes the buttons while START has its focus;
      * its touch controls press buttons through here. */
     held = CtrBottom_FilterKeys(held) | CtrBottom_InjectedKeys();
     REG_KEYINPUT = held ^ KEYS_MASK;

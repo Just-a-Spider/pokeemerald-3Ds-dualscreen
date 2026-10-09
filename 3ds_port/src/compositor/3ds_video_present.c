@@ -490,28 +490,79 @@ static void BlitBands(C3D_RenderTarget *target, unsigned count, float parallax)
 #define FPS_PIXEL 1.0f
 #define FPS_ADVANCE (4 * FPS_PIXEL)
 
-static const char *const sFpsGlyphs[] =
+static const char *GetGlyphBits(char c)
 {
-    "111101101101111", "010110010010111", "111001111100111", "111001111001111",
-    "101101111001001", "111100111001111", "111100111101111", "111001001001001",
-    "111101111101111", "111101111001111",
-    "111100111100100", /* F */
-    "111101111100100", /* P */
-};
+    switch (c)
+    {
+        case '0': return "111101101101111";
+        case '1': return "010110010010111";
+        case '2': return "111001111100111";
+        case '3': return "111001111001111";
+        case '4': return "101101111001001";
+        case '5': return "111100111001111";
+        case '6': return "111100111101111";
+        case '7': return "111001001001001";
+        case '8': return "111101111101111";
+        case '9': return "111101111001111";
+        case 'A': return "111101111101101";
+        case 'B': return "110101110101110";
+        case 'C': return "111100100100111";
+        case 'D': return "110101101101110";
+        case 'E': return "111100111100111";
+        case 'F': return "111100111100100";
+        case 'G': return "111100101101111";
+        case 'H': return "101101111101101";
+        case 'I': return "111010010010111";
+        case 'J': return "001001001101110";
+        case 'K': return "101101110101101";
+        case 'L': return "100100100100111";
+        case 'M': return "101111101101101";
+        case 'N': return "111101101101101";
+        case 'O': return "111101101101111";
+        case 'P': return "111101111100100";
+        case 'Q': return "111101101111001";
+        case 'R': return "111101110101101";
+        case 'S': return "111100111001111";
+        case 'T': return "111010010010010";
+        case 'U': return "101101101101111";
+        case 'V': return "101101101101010";
+        case 'W': return "101101101111101";
+        case 'X': return "101101010101101";
+        case 'Y': return "101101010010010";
+        case 'Z': return "111001010100111";
+        case ':': return "000010000010000";
+        case '+': return "000010111010000";
+        case '-': return "000000111000000";
+        case '/': return "001001010100100";
+        case '.': return "000000000000010";
+        default:  return "000000000000000";
+    }
+}
+
+static void DrawLine3x5(float x, float y, const char *str, u32 color)
+{
+    for (int i = 0; str[i] != '\0'; ++i)
+    {
+        char c = str[i];
+        if (c >= 'a' && c <= 'z') c -= 32;
+        const char *bits = GetGlyphBits(c);
+        float gx = x + i * FPS_ADVANCE;
+        for (unsigned p = 0; p < 15; ++p)
+        {
+            if (bits[p] == '1')
+            {
+                C2D_DrawRectSolid(gx + (p % 3) * FPS_PIXEL, y + (p / 3) * FPS_PIXEL, 0,
+                                  FPS_PIXEL, FPS_PIXEL, color);
+            }
+        }
+    }
+}
 
 static void DrawFps(C3D_RenderTarget *target)
 {
     unsigned fps = (unsigned)(sStats.fps + 0.5f);
-    unsigned glyphs[8], count = 0;
-    char digits[4];
-    int length = snprintf(digits, sizeof(digits), "%u", fps > 999 ? 999 : fps);
-
-    glyphs[count++] = 10;   /* F */
-    glyphs[count++] = 11;   /* P */
-    glyphs[count++] = 5;    /* S, which is a 5 */
-    glyphs[count++] = ~0u;  /* space */
-    for (int i = 0; i < length; ++i)
-        glyphs[count++] = (unsigned)(digits[i] - '0');
+    char fpsStr[16];
+    snprintf(fpsStr, sizeof(fpsStr), "FPS:%u", fps > 999 ? 999 : fps);
 
     /* Whatever path composed the frame, the counter draws with the 2D
      * program and no depth test, as RenderVoxel's UI pass does. */
@@ -521,18 +572,54 @@ static void DrawFps(C3D_RenderTarget *target)
     C2D_SceneBegin(target);
     C2D_ViewReset();
     Blend(5, false, false);
-    C2D_DrawRectSolid(2, 2, 0, count * FPS_ADVANCE + FPS_PIXEL * 3, 5 * FPS_PIXEL + FPS_PIXEL * 4,
-                      C2D_Color32(0, 0, 0, 160));
-    for (unsigned i = 0; i < count; ++i)
+
+    /* FPS Counter box at top-left */
+    float boxW = strlen(fpsStr) * FPS_ADVANCE + FPS_PIXEL * 3;
+    float boxH = 5 * FPS_PIXEL + FPS_PIXEL * 4;
+    C2D_DrawRectSolid(2, 2, 0, boxW, boxH, C2D_Color32(0, 0, 0, 160));
+    DrawLine3x5(2 + FPS_PIXEL * 2, 2 + FPS_PIXEL * 2, fpsStr, C2D_Color32(255, 255, 255, 255));
+
+    /* Command Guide box below FPS */
+    static const char *const sCommands[] = {
+        "Y+PAD: 360 CAM",
+        "SEL: NORTH",
+        "START: MENU",
+        "L+R: SPEED 1-4X",
+        "X+DPAD: TIME -/+",
+        "L+Y: HUD",
+    };
+    float cmdW = 16 * FPS_ADVANCE + FPS_PIXEL * 4;
+    float cmdH = 6 * (5 * FPS_PIXEL + 3) + FPS_PIXEL * 3;
+    float cmdY = boxH + 4;
+    C2D_DrawRectSolid(2, cmdY, 0, cmdW, cmdH, C2D_Color32(0, 0, 0, 175));
+    for (unsigned l = 0; l < 6; ++l)
     {
-        if (glyphs[i] == ~0u) continue;
-        const char *bits = sFpsGlyphs[glyphs[i]];
-        float x = 2 + FPS_PIXEL * 2 + i * FPS_ADVANCE, y = 2 + FPS_PIXEL * 2;
-        for (unsigned p = 0; p < 15; ++p)
-            if (bits[p] == '1')
-                C2D_DrawRectSolid(x + (p % 3) * FPS_PIXEL, y + (p / 3) * FPS_PIXEL, 0,
-                                  FPS_PIXEL, FPS_PIXEL, C2D_Color32(255, 255, 255, 255));
+        DrawLine3x5(2 + FPS_PIXEL * 2, cmdY + FPS_PIXEL * 2 + l * (5 * FPS_PIXEL + 3),
+                    sCommands[l], C2D_Color32(230, 230, 230, 255));
     }
+    C2D_Flush();
+}
+
+static void DrawToast(C3D_RenderTarget *target, const char *toast)
+{
+    if (toast == NULL || toast[0] == '\0')
+        return;
+
+    C2D_Prepare();
+    C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_COLOR);
+    BlendForget();
+    C2D_SceneBegin(target);
+    C2D_ViewReset();
+    Blend(5, false, false);
+
+    int len = strlen(toast);
+    float tw = len * FPS_ADVANCE + FPS_PIXEL * 6;
+    float th = 5 * FPS_PIXEL + FPS_PIXEL * 6;
+    float tx = 400.0f - tw - 4.0f;
+    float ty = 4.0f;
+
+    C2D_DrawRectSolid(tx, ty, 0, tw, th, C2D_Color32(20, 20, 20, 200));
+    DrawLine3x5(tx + FPS_PIXEL * 3, ty + FPS_PIXEL * 3, toast, C2D_Color32(255, 220, 40, 255));
     C2D_Flush();
 }
 #endif
@@ -838,6 +925,11 @@ void CtrVideo_Present(void)
     {
         if (!bottom) DrawFps(sTop);
         if (stereo) DrawFps(sTopRight);
+    }
+    const char *toast = CtrPlatform_GetToast();
+    if (toast != NULL && !bottom)
+    {
+        DrawToast(sTop, toast);
     }
 #endif
     /* Queued in the frame, behind the drawing into sBottom (BottomTransfer). */

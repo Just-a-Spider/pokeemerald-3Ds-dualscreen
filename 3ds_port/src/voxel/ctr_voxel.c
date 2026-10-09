@@ -49,6 +49,7 @@
 #include "voxel_grade.h"
 #include "voxel_relief.h"
 #include "voxel_lighting.h"
+#include "voxel_lighting_custom.h"
 #include "voxel_sign.h"
 
 #define VOXEL_SHADER_PATH "romfs:/shaders/voxel.shbin"
@@ -4726,239 +4727,16 @@ static void BindVertices(const VoxelGpuVertex *vertices)
  * thirteen shader instructions cost the Old 3DS frames where the view is
  * dense. Its average is kept, folded into sun and shade.
  */
-typedef struct
-{
-    float sun[3], shade[3];      /* the grade at full sun and at full shadow */
-    float haze;                  /* the most the distance haze takes */
-    float dappleLow, dappleHigh; /* brightness under a dapple's shade, in its light */
-    float rays;                  /* the sun rays' strength at their brightest */
-    float bloom;                 /* glow around the brightest parts (3ds_video.c) */
-    float motes;                 /* the sunlit dust in the air, at its brightest */
-    float hazeRgb[3];            /* what the distance fades to */
-    float hazeStart, hazeRamp;   /* x the eye-to-player distance, see SetGrade */
-} VoxelLight;
-
-#if CTR_VOXEL_LIGHTING
-static VoxelLight LightMix(const VoxelLight *a, const VoxelLight *b, float t)
-{
-    VoxelLight out = *a;
-
-    for (int i = 0; i < 3; ++i)
-    {
-        out.sun[i] += (b->sun[i] - a->sun[i]) * t;
-        out.shade[i] += (b->shade[i] - a->shade[i]) * t;
-        out.hazeRgb[i] += (b->hazeRgb[i] - a->hazeRgb[i]) * t;
-    }
-    out.haze += (b->haze - a->haze) * t;
-    out.dappleLow += (b->dappleLow - a->dappleLow) * t;
-    out.dappleHigh += (b->dappleHigh - a->dappleHigh) * t;
-    out.rays += (b->rays - a->rays) * t;
-    out.bloom += (b->bloom - a->bloom) * t;
-    out.motes += (b->motes - a->motes) * t;
-    out.hazeStart += (b->hazeStart - a->hazeStart) * t;
-    out.hazeRamp += (b->hazeRamp - a->hazeRamp) * t;
-    return out;
-}
-
-/*
- * The game's fog, as light. Outdoors a pale veil that closes in from much
- * nearer than the clear-day haze. Under the ground there is no sun to break
- * into dapples: the light goes cold and dim, and the distance sinks into a
- * blue-black instead of whitening, so the far end of a tunnel is lost in the
- * dark (the fog's drifting banks, FogSheets, stay pale in front of it). Both
- * come in with the fog's own blend, so a fog that fades in or out takes the
- * light with it.
- */
-static VoxelLight FogLight(const VoxelLight *clear, bool cave)
-{
-    VoxelLight fog = *clear;
-
-    if (cave)
-    {
-        fog.sun[0] = 0.76f; fog.sun[1] = 0.80f; fog.sun[2] = 0.88f;
-        fog.shade[0] = 0.58f; fog.shade[1] = 0.64f; fog.shade[2] = 0.78f;
-        fog.haze = 0.86f;
-        fog.dappleLow = fog.dappleHigh = 1.0f;
-        fog.hazeRgb[0] = 0.10f; fog.hazeRgb[1] = 0.12f; fog.hazeRgb[2] = 0.17f;
-        fog.hazeStart = 0.86f;
-        fog.hazeRamp = 0.55f;
-        fog.rays = 0.0f;
-        fog.bloom = 0.0f;
-        fog.motes = 0.0f;
-    }
-    else
-    {
-        /* Fog glows: more bloom, and no dust or rays to see in it. */
-        fog.sun[0] = 0.95f; fog.sun[1] = 0.98f; fog.sun[2] = 1.00f;
-        fog.haze = 0.70f;
-        fog.dappleLow = 0.95f; fog.dappleHigh = 1.02f;
-        fog.rays = 0.0f;
-        fog.bloom = 0.18f;
-        fog.motes = 0.0f;
-        fog.hazeRgb[0] = 0.80f; fog.hazeRgb[1] = 0.83f; fog.hazeRgb[2] = 0.87f;
-        fog.hazeStart = 0.80f;
-        fog.hazeRamp = 0.65f;
-    }
-    return LightMix(clear, &fog, VoxelWorld_FogDensity());
-}
-#endif
-
 static VoxelLight LightFor(bool indoor)
 {
-    VoxelLight light = {{1.00f, 0.99f, 0.95f}, {0.93f, 0.97f, 1.05f}, VOXEL_HAZE_MAX,
-                        0.96f, 1.04f, 0.11f, 0.07f, 0.85f,
-                        {(VOXEL_HAZE_COLOUR & 255) / 255.0f,
-                         ((VOXEL_HAZE_COLOUR >> 8) & 255) / 255.0f,
-                         ((VOXEL_HAZE_COLOUR >> 16) & 255) / 255.0f},
-                        VOXEL_HAZE_START, VOXEL_HAZE_RAMP};
-
-#if CTR_VOXEL_LIGHTING
-    if (!indoor)
-    {
-        if (CtrSettings_DayNight())
-        {
-            float t = CtrPlatform_GetDayTime();
-            VoxelLight day = light;
-            VoxelLight dawn = {
-                {1.15f, 0.95f, 0.80f}, {0.85f, 0.88f, 1.05f}, 0.22f,
-                0.92f, 1.05f, 0.16f, 0.12f, 0.90f,
-                {0.92f, 0.80f, 0.70f},
-                VOXEL_HAZE_START, VOXEL_HAZE_RAMP
-            };
-            VoxelLight dusk = {
-                {1.20f, 0.82f, 0.65f}, {0.75f, 0.78f, 1.02f}, 0.26f,
-                0.90f, 1.08f, 0.18f, 0.14f, 0.95f,
-                {0.88f, 0.68f, 0.60f},
-                VOXEL_HAZE_START, VOXEL_HAZE_RAMP
-            };
-            VoxelLight night = {
-                {0.48f, 0.52f, 0.72f}, {0.42f, 0.46f, 0.68f}, 0.38f,
-                0.98f, 1.02f, 0.00f, 0.02f, 0.15f,
-                {0.18f, 0.22f, 0.38f},
-                VOXEL_HAZE_START, VOXEL_HAZE_RAMP
-            };
-            const float dawnStart = 5.0f, dawnPeak = 6.5f, dayStart = 8.0f;
-            const float duskStart = 17.5f, duskPeak = 18.8f, nightStart = 20.5f;
-            VoxelLight from, to;
-            float factor = 0.0f;
-
-            if (t < dawnStart)
-            {
-                light = night;
-            }
-            else if (t < dawnPeak)
-            {
-                from = night; to = dawn;
-                factor = (t - dawnStart) / (dawnPeak - dawnStart);
-                goto interpolate_daynight;
-            }
-            else if (t < dayStart)
-            {
-                from = dawn; to = day;
-                factor = (t - dawnPeak) / (dayStart - dawnPeak);
-                goto interpolate_daynight;
-            }
-            else if (t < duskStart)
-            {
-                light = day;
-            }
-            else if (t < duskPeak)
-            {
-                from = day; to = dusk;
-                factor = (t - duskStart) / (duskPeak - duskStart);
-                goto interpolate_daynight;
-            }
-            else if (t < nightStart)
-            {
-                from = dusk; to = night;
-                factor = (t - duskPeak) / (nightStart - duskPeak);
-                goto interpolate_daynight;
-            }
-            else
-            {
-                light = night;
-            }
-            goto apply_weather;
-
-        interpolate_daynight:
-            factor = 0.5f - 0.5f * cosf(factor * 3.14159265f);
-            for (int i = 0; i < 3; ++i)
-            {
-                light.sun[i] = from.sun[i] + (to.sun[i] - from.sun[i]) * factor;
-                light.shade[i] = from.shade[i] + (to.shade[i] - from.shade[i]) * factor;
-                light.hazeRgb[i] = from.hazeRgb[i] + (to.hazeRgb[i] - from.hazeRgb[i]) * factor;
-            }
-            light.haze = from.haze + (to.haze - from.haze) * factor;
-            light.dappleLow = from.dappleLow + (to.dappleLow - from.dappleLow) * factor;
-            light.dappleHigh = from.dappleHigh + (to.dappleHigh - from.dappleHigh) * factor;
-            light.rays = from.rays + (to.rays - from.rays) * factor;
-            light.bloom = from.bloom + (to.bloom - from.bloom) * factor;
-            light.motes = from.motes + (to.motes - from.motes) * factor;
-        }
-
-    apply_weather:
-        switch (VoxelWorld_Weather())
-        {
-        case VOXEL_WEATHER_SUN:
-            light.sun[0] = 1.04f; light.sun[1] = 1.01f; light.sun[2] = 0.93f;
-            light.haze = 0.12f;
-            light.dappleLow = 0.94f; light.dappleHigh = 1.07f;
-            light.rays = 0.14f;
-            light.bloom = 0.10f;
-            light.motes = 1.00f;
-            break;
-        case VOXEL_WEATHER_RAIN:
-            /* Overcast: no sun to break into patches, rays or glinting dust. */
-            light.sun[0] = 0.81f; light.sun[1] = 0.88f; light.sun[2] = 0.98f;
-            light.shade[0] = 0.82f; light.shade[1] = 0.89f; light.shade[2] = 1.00f;
-            light.haze = 0.30f;
-            light.dappleLow = light.dappleHigh = 1.0f;
-            light.rays = 0.0f;
-            light.bloom = 0.08f;
-            light.motes = 0.0f;
-            break;
-        case VOXEL_WEATHER_FOG:
-            light = FogLight(&light, VoxelWorld_Underground());
-            break;
-        case VOXEL_WEATHER_PARTICLES:
-            /* The weather's own ash or sand fills the air instead. */
-            light.sun[0] = 0.93f; light.sun[1] = 0.92f; light.sun[2] = 0.88f;
-            light.haze = 0.36f;
-            light.dappleLow = 0.92f; light.dappleHigh = 1.03f;
-            light.rays = 0.0f;
-            light.bloom = 0.12f;
-            light.motes = 0.0f;
-            break;
-        case VOXEL_WEATHER_SHADE:
-            light.sun[0] = 0.92f; light.sun[1] = 0.95f; light.sun[2] = 0.98f;
-            light.haze = 0.25f;
-            light.dappleLow = 0.92f; light.dappleHigh = 1.03f;
-            light.rays = 0.0f;
-            light.bloom = 0.12f;
-            light.motes = 0.40f;
-            break;
-        default:
-            break;
-        }
-        return light;
-    }
-#endif
-    (void)indoor;
-    for (int i = 0; i < 3; ++i)
-        light.sun[i] = light.shade[i] = 1.0f;
-    light.haze = 0.0f;
-    light.dappleLow = light.dappleHigh = 1.0f;
-    light.rays = 0.0f;
-    light.bloom = 0.0f;
-    light.motes = 0.0f;
-    return light;
+    return VoxelCustom_LightFor(indoor, sCamera.yaw, sCamera.pitch);
 }
 
 static void SetGrade(const VoxelLight *light)
 {
-    float eye = sCamera.distance / cosf(C3D_AngleFromDegrees(sCamera.pitch));
-    float fogStart = eye * light->hazeStart;
-    float fogScale = light->haze / (eye * light->hazeRamp);
+    float fogStart, fogScale;
+    VoxelCustom_CalculateQuadrantFog(sCamera.distance, sCamera.pitch, sCamera.yaw, light->haze,
+                                     &fogStart, &fogScale);
 
     /* Halved: the texture environment scales by two. */
     C3D_FVUnifSet(GPU_VERTEX_SHADER, sUniShadeTint,
@@ -5938,6 +5716,9 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
 
             if (count == 0)
                 continue;
+            if (pass == VOXEL_ATLAS_PAGES && VoxelCustom_ShouldCullTrees((float)sDraws[i].worldX, (float)sDraws[i].worldZ,
+                                                                        sCamera.x, sCamera.z, sCamera.pitch, sCamera.yaw))
+                continue;
             tex = pass < VOXEL_ATLAS_PAGES ? AtlasTex(chunk->atlas, pass)
                 : pass == VOXEL_ATLAS_PAGES ? &sTreeAtlas : BuildingPage(chunk->buildingPage);
             if (tex == NULL)
@@ -6017,21 +5798,7 @@ void CtrVoxel_Draw(C3D_RenderTarget *target, float eyeOffset)
         C3D_TexEnvOpAlpha(env, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_R, GPU_TEVOP_A_SRC_ALPHA);
         C3D_TexEnvFunc(env, C3D_Alpha, GPU_MODULATE);
         C3D_TexEnvScale(env, C3D_Alpha, GPU_TEVSCALE_2);
-        uint32_t shadowColor = 0xFF281408u;
-        if (CtrSettings_DayNight() && !indoor)
-        {
-            float t = CtrPlatform_GetDayTime();
-            if (t < 5.0f || t >= 21.0f)
-                shadowColor = 0xCC301808u; /* midnight cool blue */
-            else if (t < 7.0f || t >= 18.5f)
-                shadowColor = 0xFF181028u; /* dusk / twilight violet-indigo */
-            else
-                shadowColor = 0xFF281408u; /* crisp day shadow */
-        }
-        else if (indoor)
-        {
-            shadowColor = 0xCC181414u; /* soft neutral indoor ambient contact shadow */
-        }
+        uint32_t shadowColor = VoxelCustom_GetShadowColor(indoor);
         C3D_TexEnvColor(env, shadowColor);
         C3D_DrawArrays(GPU_TRIANGLES, VOXEL_SHADOW_FIRST, sShadowVertices);
         C3D_ColorLogicOp(GPU_LOGICOP_COPY);

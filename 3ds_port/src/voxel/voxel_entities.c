@@ -24,6 +24,7 @@
 #include "voxel_relief.h"
 #include "voxel_world.h"
 #include "voxel_lighting.h"
+#include "voxel_lighting_custom.h"
 
 /* 16 pixels of sprite is one world tile, as in the reference renderer. */
 #define VOXEL_PIXELS_PER_TILE 16.0f
@@ -762,12 +763,14 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
     float v1 = 1.0f - (baseY + rows) / (float)VOXEL_SPRITE_ATLAS_DIM;
     float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.5f;
     float height = rows / VOXEL_PIXELS_PER_TILE * stretch;
+    float sx, sz, maxAlpha;
+    VoxelCustom_GetDynamicShadowVector(&sx, &sz, &maxAlpha, height);
     /* Off the ground by `lift` (riding), the feet's shadow falls that much
      * further along the sun. */
-    float cx = worldX + 0.5f + VOXEL_SUN_DX * lift, cz = worldZ + 0.5f + VOXEL_SUN_DZ * lift;
+    float cx = worldX + 0.5f + (height > 0.001f ? (sx / height) * lift : VOXEL_SUN_DX * lift);
+    float cz = worldZ + 0.5f + (height > 0.001f ? (sz / height) * lift : VOXEL_SUN_DZ * lift);
     float ax = cx - rightX * halfW, az = cz - rightZ * halfW;
     float bx = cx + rightX * halfW, bz = cz + rightZ * halfW;
-    float sx = VOXEL_SUN_DX * height, sz = VOXEL_SUN_DZ * height;
     /* Each corner on the ground under it: at a face's foot the ground under
      * the shadow's far end is not the ground under the feet. */
     float ya = VoxelRelief_LiftAt(ax, az) + VOXEL_CAST_SHADOW_LIFT;
@@ -782,12 +785,56 @@ static void EmitCastShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, u
         return;
     if (strength > 1.0f)
         strength = 1.0f;
-    strength *= VOXEL_CAST_SHADOW_ALPHA;
+    strength *= maxAlpha;
     VoxelBuilder_Quad(shadows,
         &(VoxelVertex){ax,      ya, az + za,      u0, v1, strength},
         &(VoxelVertex){bx,      yb, bz + zb,      u1, v1, strength},
         &(VoxelVertex){bx + sx, yc, bz + sz + zc, u1, v0, strength},
         &(VoxelVertex){ax + sx, yd, az + sz + zd, u0, v0, strength});
+}
+
+static void EmitIndoorContactShadow(VoxelBuilder *shadows, const VoxelSpriteSlot *slot, unsigned index,
+                                    float worldX, float worldZ, float rightX, float rightZ)
+{
+    unsigned baseX = (index % VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    unsigned baseY = (index / VOXEL_SPRITE_COLUMNS) * VOXEL_SPRITE_SLOT_DIM;
+    float u0 = baseX / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float u1 = (baseX + slot->width) / (float)VOXEL_SPRITE_ATLAS_DIM;
+    int rows = VisibleRows(slot);
+    if (rows <= 0)
+        return;
+    float v0 = 1.0f - baseY / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float v1 = 1.0f - (baseY + rows) / (float)VOXEL_SPRITE_ATLAS_DIM;
+    float halfW = slot->width / VOXEL_PIXELS_PER_TILE * 0.40f;
+    float cx = worldX + 0.5f, cz = worldZ + 0.5f;
+
+    /* Soft ambient contact pool under feet, slightly elliptical */
+    float forwardX = -rightZ;
+    float forwardZ =  rightX;
+    float halfD = 0.20f;
+
+    float ax = cx - rightX * halfW - forwardX * halfD;
+    float az = cz - rightZ * halfW - forwardZ * halfD;
+    float bx = cx + rightX * halfW - forwardX * halfD;
+    float bz = cz + rightZ * halfW - forwardZ * halfD;
+    float cx2 = cx + rightX * halfW + forwardX * halfD;
+    float cz2 = cz + rightZ * halfW + forwardZ * halfD;
+    float dx = cx - rightX * halfW + forwardX * halfD;
+    float dz = cz - rightZ * halfW + forwardZ * halfD;
+
+    float ya = VoxelRelief_LiftAt(ax, az) + VOXEL_CAST_SHADOW_LIFT;
+    float yb = VoxelRelief_LiftAt(bx, bz) + VOXEL_CAST_SHADOW_LIFT;
+    float yc = VoxelRelief_LiftAt(cx2, cz2) + VOXEL_CAST_SHADOW_LIFT;
+    float yd = VoxelRelief_LiftAt(dx, dz) + VOXEL_CAST_SHADOW_LIFT;
+    float za = VoxelRelief_ShiftAt(ax, az), zb = VoxelRelief_ShiftAt(bx, bz);
+    float zc = VoxelRelief_ShiftAt(cx2, cz2), zd = VoxelRelief_ShiftAt(dx, dz);
+
+    float strength = 0.22f;
+    VoxelBuilder_Quad(shadows,
+        &(VoxelVertex){ax,  ya, az + za,  u0, v1, strength},
+        &(VoxelVertex){bx,  yb, bz + zb,  u1, v1, strength},
+        &(VoxelVertex){cx2, yc, cz2 + zc, u1, v0, strength},
+        &(VoxelVertex){dx,  yd, dz + zd,  u0, v0, strength});
 }
 
 /*
@@ -1250,9 +1297,14 @@ unsigned VoxelEntities_Emit(VoxelBuilder *builder, uint16_t *atlas, const VoxelC
         /* Riding, it is off the ground: its shadow falls from its feet,
          * moved along the sun by how high they are, onto the water past
          * the mon's back. */
-        if (shadows != NULL && card->outdoor)
-            EmitCastShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ,
-                           stretch, card->shade, card->rise > 0.0f ? rise : 0.0f);
+        if (shadows != NULL)
+        {
+            if (card->outdoor)
+                EmitCastShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ,
+                               stretch, card->shade, card->rise > 0.0f ? rise : 0.0f);
+            else if (card->rise <= 0.0f)
+                EmitIndoorContactShadow(shadows, &sSlots[i], i, card->worldX, card->worldZ, rightX, rightZ);
+        }
 #endif
         if (reflections != NULL && gObjectEvents[i].hasReflection)
             EmitReflection(reflections, &sSlots[i], i, card->worldX, card->worldZ,

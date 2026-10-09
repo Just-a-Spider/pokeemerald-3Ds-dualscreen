@@ -33,5 +33,6 @@ void VoxelCamera_Shift(VoxelCamera *cam, float dx, float dz);
  * rather than the player's options: the battle stage (ctr_voxel.c). */
 void VoxelCamera_Frame(VoxelCamera *cam, float targetX, float targetZ, float ground,
                        float pitch, float distance);
+void VoxelCamera_ResetNorth(void);
 
 #endif

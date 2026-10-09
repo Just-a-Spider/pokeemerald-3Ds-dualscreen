@@ -26,6 +26,7 @@ void Port_RecordMainLoopIteration(void);
 void Port_SetGfxTilesetDebug(u8 secondary, u16 size, u8 nonzero);
 void Port_SetGfxPaletteDebug(u8 secondary, u8 nonzero, u8 resolved);
 void Port_SetGfxMetatileDebug(u16 id, u8 resolved, u16 first, u16 second);
+u8 Port_ToCameraRelativeDirection(u8 direction);
 
 /* ── External resources ─────────────────────────────────────────────────── */
 /* Hardware profiling of a stretch of game code: logs the time since the last

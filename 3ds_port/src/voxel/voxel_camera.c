@@ -8,12 +8,10 @@
 #include "3ds_platform.h"
 #include "voxel_camera.h"
 #include "voxel_world.h"
+#include "voxel_sprite_dir.h"
 
 void CtrVoxel_InvalidateTreeQuadrant(void);
-
-void Voxel_UpdateAllObjectFacing(void)
-{
-}
+void CtrChords_NotifyYUsed(void);
 
 #define VOXEL_DEG_TO_RAD (3.14159265358979323846f / 180.0f)
 #define VOXEL_FOLLOW 0.15f
@@ -73,73 +71,81 @@ void VoxelCamera_Snap(VoxelCamera *cam, float playerWorldX, float playerWorldZ)
     Place(cam);
 }
 
+static bool sRotatedWithStick = false;
+static int sLastPitchSetting = -1;
+static float sTargetYaw = 0.0f;
+static bool sSnapping = false;
+
+void VoxelCamera_ResetNorth(void)
+{
+    sTargetYaw = 0.0f;
+    sSnapping = true;
+    sRotatedWithStick = false;
+    CtrPlatform_ShowToast("CAMERA: NORTH (0 deg)");
+}
+
 void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ)
 {
     const CtrInput *in = CtrInput_Get();
-    static bool sRotatedWithStick = false;
-    static int sLastPitchSetting = -1;
-    static float sTargetYaw = 0.0f;
-    static bool sSnapping = false;
 
     if (in != NULL)
     {
-        /* Old 3DS: Hold L for Camera cardinal snaps and Fast-Forward step */
-        if (in->physicalHeld & CTR_KEY_L)
+        if (in->physicalDown & CTR_KEY_Y)
         {
+            sRotatedWithStick = false;
+        }
+
+        /* Hold Y: Free 360 camera rotation with Circle Pad, or cardinal snaps with D-Pad */
+        if (in->physicalHeld & CTR_KEY_Y)
+        {
+            /* Direct cardinal snaps via D-Pad */
             if (in->physicalDown & CTR_KEY_UP)
             {
                 sTargetYaw = 0.0f; /* North */
                 sSnapping = true;
                 sRotatedWithStick = true;
-                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_Y);
             }
             else if (in->physicalDown & CTR_KEY_RIGHT)
             {
                 sTargetYaw = 90.0f; /* East */
                 sSnapping = true;
                 sRotatedWithStick = true;
-                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_Y);
             }
             else if (in->physicalDown & CTR_KEY_DOWN)
             {
                 sTargetYaw = 180.0f; /* South */
                 sSnapping = true;
                 sRotatedWithStick = true;
-                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_Y);
             }
             else if (in->physicalDown & CTR_KEY_LEFT)
             {
                 sTargetYaw = -90.0f; /* West */
                 sSnapping = true;
                 sRotatedWithStick = true;
-                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_L);
+                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_Y);
             }
 
-            /* Old 3DS: L + R cycles Fast-Forward speed (1x -> 2x -> 3x -> 4x -> 1x) */
-            if (in->physicalDown & CTR_KEY_R)
+            /* Free camera rotation via Circle Pad */
+            if (abs(in->circleX) > 20)
             {
-                CtrSettings_StepSpeed(1, true);
-                CtrInput_Mask(CTR_KEY_R | CTR_KEY_L);
+                sSnapping = false;
+                cam->yaw += (float)in->circleX * 0.015f;
+                sRotatedWithStick = true;
+                CtrChords_NotifyYUsed();
+                while (cam->yaw > 180.0f) cam->yaw -= 360.0f;
+                while (cam->yaw < -180.0f) cam->yaw += 360.0f;
+                sTargetYaw = cam->yaw;
             }
-        }
-
-        /* Hold SELECT + D-Pad Left/Right for RTC scrubbing on Old 3DS */
-        if ((in->physicalHeld & CTR_KEY_SELECT) && !(in->physicalHeld & (CTR_KEY_A | CTR_KEY_B)))
-        {
-            if (in->physicalDown & CTR_KEY_RIGHT)
+            if (abs(in->circleY) > 25)
             {
-                CtrPlatform_AddTimeOffset(3600);
-                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_SELECT);
-            }
-            else if (in->physicalDown & CTR_KEY_LEFT)
-            {
-                CtrPlatform_AddTimeOffset(-3600);
-                CtrInput_Mask(CTR_KEY_DPAD | CTR_KEY_SELECT);
-            }
-            else if (in->physicalDown & CTR_KEY_START)
-            {
-                CtrPlatform_SetTimeOffset(0);
-                CtrInput_Mask(CTR_KEY_START | CTR_KEY_SELECT);
+                cam->pitch += (float)in->circleY * 0.008f;
+                if (cam->pitch < 20.0f) cam->pitch = 20.0f;
+                if (cam->pitch > 60.0f) cam->pitch = 60.0f;
+                sRotatedWithStick = true;
+                CtrChords_NotifyYUsed();
             }
         }
         else
@@ -151,25 +157,24 @@ void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ
                 sLastPitchSetting = curPitchSetting;
                 cam->pitch = (float)curPitchSetting;
             }
+        }
 
-            if (in->physicalUp & CTR_KEY_L)
-            {
-                /* Quick tap of L without pressing D-Pad resets camera back to North default */
-                if (!sRotatedWithStick)
-                {
-                    sTargetYaw = 0.0f;
-                    cam->yaw = 0.0f;
-                    sSnapping = false;
-                    cam->pitch = (float)curPitchSetting;
-                }
-            }
+        /* SELECT single tap (when not holding START/A/B): Instant camera reset to North */
+        if ((in->physicalDown & CTR_KEY_SELECT) && !(in->physicalHeld & (CTR_KEY_START | CTR_KEY_A | CTR_KEY_B | CTR_KEY_Y | CTR_KEY_X)))
+        {
+            sTargetYaw = 0.0f;
+            cam->pitch = (float)CtrSettings_VoxelPitch();
+            sSnapping = true;
+            sRotatedWithStick = false;
+            CtrPlatform_ShowToast("CAMERA: NORTH (0 deg)");
+            CtrInput_Mask(CTR_KEY_SELECT);
         }
 
         /* Smooth camera snap interpolation */
         if (sSnapping)
         {
             while (sTargetYaw > 180.0f) sTargetYaw -= 360.0f;
-            while (sTargetYaw <= -180.0f) sTargetYaw += 360.0f;
+            while (sTargetYaw <= -180.0f) sTargetYaw -= 360.0f;
             float diff = sTargetYaw - cam->yaw;
             while (diff > 180.0f) diff -= 360.0f;
             while (diff < -180.0f) diff += 360.0f;
@@ -190,8 +195,8 @@ void VoxelCamera_Update(VoxelCamera *cam, float playerWorldX, float playerWorldZ
         if (curQ != sLastQuadrant)
         {
             sLastQuadrant = curQ;
-            Voxel_UpdateAllObjectFacing();
             CtrVoxel_InvalidateTreeQuadrant();
+            VoxelSprite_OnQuadrantChanged(curQ);
         }
     }
 

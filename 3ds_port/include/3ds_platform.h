@@ -111,6 +111,8 @@ void CtrPlatform_SetTimeOffset(int seconds);
 int CtrPlatform_GetTimeOffset(void);
 bool CtrPlatform_GetFastForward(void);
 void CtrPlatform_SetFastForward(bool on);
+void CtrPlatform_ShowToast(const char *msg);
+const char *CtrPlatform_GetToast(void);
 
 void CtrGame_Init(void);
 void CtrGame_SoftReset(void);
