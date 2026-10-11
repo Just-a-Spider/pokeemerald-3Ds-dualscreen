@@ -422,7 +422,7 @@ static void BuildMapCache(void)
         return;
     memcpy(sCache[CACHE_MAP], sCache[CACHE_MENU], sizeof(sCanvas));
     sDst = sCache[CACHE_MAP];
-    FillRect(0, 0, CW, H, sRes.mapPal[0]);
+    FillRect(0, 0, CW, 176, sRes.mapPal[0]);
     /* The map is a 64x64 affine map; the ocean around Hoenn is tile 0. */
     for (int ty = 0; ty < 20; ++ty)
         for (int tx = 0; tx < CW / 8; ++tx)
@@ -442,7 +442,7 @@ static void DrawRegionName(const ViewState *s)
     if (mapsec == MAPSEC_NONE)
         return;
     GetMapName(name, mapsec, 0);
-    DrawBoxEx(BOX_MENU, 8, 188, 28, 5, picked);
+    DrawPlate(8, 188, 224, 40, picked ? &sLook.chosen : &sLook.plate, 0, picked);
     DrawStrCentered(&sNormal, name, CW / 2, 200, LABEL_FG(picked), LABEL_SH(picked));
 }
 

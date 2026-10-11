@@ -3398,13 +3398,14 @@ static void DrawFogLattice(unsigned attr2, unsigned width, unsigned height, bool
         }
 }
 
+static const uint8_t sObjDimensions[3][4][2] = {
+    {{8,8},{16,16},{32,32},{64,64}},
+    {{16,8},{32,8},{32,16},{64,32}},
+    {{8,16},{8,32},{16,32},{32,64}}
+};
+
 static void DrawObjects(unsigned priority, bool effects)
 {
-    static const uint8_t dimensions[3][4][2] = {
-        {{8,8},{16,16},{32,32},{64,64}},
-        {{16,8},{32,8},{32,16},{64,32}},
-        {{8,16},{8,32},{16,32},{32,64}}
-    };
     bool fogDrawn = false;
 
     for (int i = 127; i >= 0; --i)
@@ -3432,10 +3433,10 @@ static void DrawObjects(unsigned priority, bool effects)
         bool affine = (attr0 & 0x100) != 0, color256 = (attr0 & 0x2000) != 0;
         if ((!affine && (attr0 & 0x200)) || ((attr2 >> 10) & 3) != priority) continue;
         unsigned mode = (attr0 >> 10) & 3, shape = attr0 >> 14;
-        if (mode == 2) { Error(7, "OBJ windows not supported"); continue; }
+        if (mode == 2) continue; /* ST_OAM_OBJ_WINDOW handled in WindowPartition */
         if (mode == 3 || shape == 3) continue;
         if (attr0 & 0x1000) Error(8, "OBJ mosaic not supported");
-        unsigned width = dimensions[shape][attr1 >> 14][0], height = dimensions[shape][attr1 >> 14][1];
+        unsigned width = sObjDimensions[shape][attr1 >> 14][0], height = sObjDimensions[shape][attr1 >> 14][1];
         unsigned boxW = affine && (attr0 & 0x200) ? width * 2 : width;
         unsigned boxH = affine && (attr0 & 0x200) ? height * 2 : height;
         int x = attr1 & 511, y = attr0 & 255;
@@ -3800,11 +3801,24 @@ static bool Inside(int px, int py, unsigned w)
     return x0 < x1 && y0 < y1 && px >= x0 && px < x1 && py >= y0 && py < y1;
 }
 
+static bool HasObjWin(void)
+{
+    for (int i = 0; i < 128; ++i)
+    {
+        const uint16_t *obj = sMemory.oam + i * 4;
+        unsigned attr0 = obj[0];
+        bool affine = (attr0 & 0x100) != 0;
+        if (!affine && (attr0 & 0x200)) continue;
+        if (((attr0 >> 10) & 3) == 2) return true;
+    }
+    return false;
+}
+
 /*
  * The rectangles lines [top, bottom) split into by the windows, each with the
  * layer mask it shows: WIN0 > WIN1 > outside. At most 5 x 5 of them.
  */
-#define WINDOW_RECTS 25
+#define WINDOW_RECTS 64
 static unsigned WindowPartition(int top, int bottom, int rects[WINDOW_RECTS][4],
                                 unsigned masks[WINDOW_RECTS])
 {
@@ -3812,8 +3826,8 @@ static unsigned WindowPartition(int top, int bottom, int rects[WINDOW_RECTS][4],
     /* Window rectangles are GBA coordinates; the partition covers the whole
      * viewport so the margins keep the "outside" mask. */
     bool gba = sNavBand || sTransitionCompose;
-    int xs[6] = {gba ? 0 : VIEW_LEFT, gba ? 240 : VIEW_RIGHT};
-    int ys[6] = {top, bottom};
+    int xs[16] = {gba ? 0 : VIEW_LEFT, gba ? 240 : VIEW_RIGHT};
+    int ys[16] = {top, bottom};
     unsigned nx = 2, ny = 2;
     for (unsigned w = 0; w < 2; ++w)
         if (display & (0x2000u << w))
@@ -3838,11 +3852,58 @@ static unsigned WindowPartition(int top, int bottom, int rects[WINDOW_RECTS][4],
              * where the seam showed - and walked every layer twice to do it.
              */
             if (x0 >= x1 || y0 >= y1) continue;
-            xs[nx++] = x0;
-            xs[nx++] = x1;
-            ys[ny++] = y0;
-            ys[ny++] = y1;
+            if (nx < 16) xs[nx++] = x0;
+            if (nx < 16) xs[nx++] = x1;
+            if (ny < 16) ys[ny++] = y0;
+            if (ny < 16) ys[ny++] = y1;
         }
+
+    struct { int x0, x1, y0, y1; } objWins[4];
+    unsigned numObjWins = 0;
+    if (display & 0x8000)
+    {
+        for (int i = 0; i < 128 && numObjWins < 4; ++i)
+        {
+            const uint16_t *obj = sMemory.oam + i * 4;
+            unsigned attr0 = obj[0], attr1 = obj[1];
+            bool affine = (attr0 & 0x100) != 0;
+            if (!affine && (attr0 & 0x200)) continue;
+            unsigned mode = (attr0 >> 10) & 3;
+            if (mode != 2) continue; /* ST_OAM_OBJ_WINDOW */
+            unsigned shape = attr0 >> 14;
+            if (shape == 3) continue;
+            unsigned size = attr1 >> 14;
+            unsigned w = sObjDimensions[shape][size][0];
+            unsigned h = sObjDimensions[shape][size][1];
+            if (affine && (attr0 & 0x200)) { w *= 2; h *= 2; }
+            int ox = attr1 & 511, oy = attr0 & 255;
+            if (sStage || sCentred || sBattle || sTransitionCompose)
+            {
+                if (ox + (int)w > 512) ox -= 512;
+                if (oy + (int)h > 256) oy -= 256;
+            }
+            else
+            {
+                if (ox >= VIEW_RIGHT) ox -= 512;
+                if (oy >= VIEW_BOTTOM) oy -= 256;
+            }
+            int ox0 = ox, ox1 = ox + (int)w;
+            int oy0 = oy, oy1 = oy + (int)h;
+            if (oy0 < top) oy0 = top;
+            if (oy1 > bottom) oy1 = bottom;
+            if (ox0 >= ox1 || oy0 >= oy1) continue;
+            objWins[numObjWins].x0 = ox0;
+            objWins[numObjWins].x1 = ox1;
+            objWins[numObjWins].y0 = oy0;
+            objWins[numObjWins].y1 = oy1;
+            numObjWins++;
+            if (nx < 16) xs[nx++] = ox0;
+            if (nx < 16) xs[nx++] = ox1;
+            if (ny < 16) ys[ny++] = oy0;
+            if (ny < 16) ys[ny++] = oy1;
+        }
+    }
+
     for (unsigned i = 0; i < nx; ++i) for (unsigned j = i + 1; j < nx; ++j)
         if (xs[j] < xs[i]) { int t=xs[j]; xs[j]=xs[i]; xs[i]=t; }
     for (unsigned i = 0; i < ny; ++i) for (unsigned j = i + 1; j < ny; ++j)
@@ -3850,16 +3911,59 @@ static unsigned WindowPartition(int top, int bottom, int rects[WINDOW_RECTS][4],
     for (unsigned y = 0; y + 1 < ny; ++y) for (unsigned x = 0; x + 1 < nx; ++x)
     {
         if (xs[x] == xs[x+1] || ys[y] == ys[y+1]) continue;
-        unsigned mask = (display & 0x6000) ? Reg(0x4a) & 63 : 63;
+        if (count >= WINDOW_RECTS) break;
+        unsigned mask = (display & 0xE000) ? Reg(0x4a) & 63 : 63;
+        for (unsigned k = 0; k < numObjWins; ++k)
+        {
+            if (xs[x] >= objWins[k].x0 && xs[x] < objWins[k].x1 &&
+                ys[y] >= objWins[k].y0 && ys[y] < objWins[k].y1)
+            {
+                mask = (Reg(0x4a) >> 8) & 63;
+                break;
+            }
+        }
         for (int w = 1; w >= 0; --w)
             if ((display & (0x2000u << w)) && Inside(xs[x], ys[y], (unsigned)w))
                 mask = (Reg(0x48) >> (8*w)) & 63;
+
+        /* Coalesce horizontally with previous rectangle if identical mask & row */
+        if (count > 0 && rects[count - 1][1] == ys[y] && rects[count - 1][3] == ys[y+1]
+            && rects[count - 1][2] == xs[x] && masks[count - 1] == mask)
+        {
+            rects[count - 1][2] = xs[x+1];
+            continue;
+        }
+
         rects[count][0] = xs[x];
         rects[count][1] = ys[y];
         rects[count][2] = xs[x+1];
         rects[count][3] = ys[y+1];
         masks[count++] = mask;
     }
+
+    /* Coalesce vertically if rectangles have identical x0, x1, mask and touch vertically */
+    for (unsigned i = 0; i < count; ++i)
+    {
+        for (unsigned j = i + 1; j < count; ++j)
+        {
+            if (rects[i][0] == rects[j][0] && rects[i][2] == rects[j][2]
+                && rects[i][3] == rects[j][1] && masks[i] == masks[j])
+            {
+                rects[i][3] = rects[j][3];
+                for (unsigned k = j; k + 1 < count; ++k)
+                {
+                    rects[k][0] = rects[k+1][0];
+                    rects[k][1] = rects[k+1][1];
+                    rects[k][2] = rects[k+1][2];
+                    rects[k][3] = rects[k+1][3];
+                    masks[k] = masks[k+1];
+                }
+                count--;
+                j--;
+            }
+        }
+    }
+
     return count;
 }
 
@@ -3894,8 +3998,28 @@ static void Compose(void)
     int top = sNavBand ? sClipY0 : VIEW_TOP, bottom = sNavBand ? sClipY1 : VIEW_BOTTOM;
     int first = top > 0 ? top : 0, end = bottom < 160 ? bottom : 160;
 
-    if (display & 0x8000) Error(7, "OBJ windows not supported");
-    if (!(display & 0x6000)) { Layers(63); return; }
+    bool w0 = false, w1 = false;
+    if (display & 0x2000)
+    {
+        int x0, x1, y0, y1;
+        WindowRect(0, &x0, &x1, &y0, &y1);
+        w0 = (x0 < x1 && y0 < y1);
+    }
+    if (display & 0x4000)
+    {
+        int x0, x1, y0, y1;
+        WindowRect(1, &x0, &x1, &y0, &y1);
+        w1 = (x0 < x1 && y0 < y1);
+    }
+    bool objWin = (display & 0x8000) && HasObjWin();
+
+    if (!w0 && !w1 && !objWin)
+    {
+        unsigned mask = (display & 0xE000) ? (Reg(0x4a) & 63) : 63;
+        Layers(mask);
+        return;
+    }
+
     if (!LineWindows())
         ComposeBand(top, bottom);
     else

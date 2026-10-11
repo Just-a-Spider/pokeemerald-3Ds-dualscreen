@@ -16,8 +16,19 @@
         PORT_PROF_END(call, section);                 \
     }
 
+extern void VoxelSprite_AfterAnimateSprites(void);
+
 PROF_WRAP_VOID(RunTasks, PORT_PROF_TASKS, (void), ())
-PROF_WRAP_VOID(AnimateSprites, PORT_PROF_SPRITES, (void), ())
+
+void __real_AnimateSprites(void);
+void __wrap_AnimateSprites(void)
+{
+    PORT_PROF_BEGIN(call);
+    __real_AnimateSprites();
+    VoxelSprite_AfterAnimateSprites();
+    PORT_PROF_END(call, PORT_PROF_SPRITES);
+}
+
 PROF_WRAP_VOID(BuildOamBuffer, PORT_PROF_SPRITES, (void), ())
 PROF_WRAP_VOID(ProcessDma3Requests, PORT_PROF_DMA3, (void), ())
 PROF_WRAP_VOID(LZ77UnCompWram, PORT_PROF_LZ, (const u32 *src, void *dest), (src, dest))

@@ -106,8 +106,6 @@ VOXEL_GAME_SRCS := src/voxel/voxel_world.c src/voxel/voxel_camera.c \
 ifeq ($(VOXEL_LIGHTING),1)
 VOXEL_GAME_SRCS += src/voxel/voxel_lighting.c
 endif
-VOXEL_WRAPPED := SetStepAnim SetStepAnimHandleAlternation StartSpriteAnim StartSpriteAnimIfDifferent
-LDFLAGS += $(foreach f,$(VOXEL_WRAPPED),-Wl,--wrap=$(f))
 VOXEL_GAME_OBJS := $(patsubst src/voxel/%.c,build/voxel/%.o,$(VOXEL_GAME_SRCS))
 BACKEND_OBJS += $(VOXEL_GAME_OBJS) build/ctr_voxel.o
 ROMFS_SHADER_OUTS := romfs/shaders/voxel.shbin romfs/voxel/regions.bin

@@ -4090,8 +4090,8 @@ static uint32_t InstanceSignature(void)
 #define VOXEL_BATTLE_INTRO_WAIT 150u
 /* The stage search's slice per frame (VoxelBattle_StepStage): 1023 cells,
  * then 169 spots. */
-#define VOXEL_BATTLE_STAGE_CELLS 32u
-#define VOXEL_BATTLE_STAGE_SPOTS 8u
+#define VOXEL_BATTLE_STAGE_CELLS 24u
+#define VOXEL_BATTLE_STAGE_SPOTS 3u
 
 static struct
 {

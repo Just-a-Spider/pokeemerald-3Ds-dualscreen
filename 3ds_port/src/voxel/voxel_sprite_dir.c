@@ -1,8 +1,9 @@
 /*
  * Segmented domain: Camera-relative sprite animation alignment for voxel mode.
  *
- * Aligns character and NPC sprite animations (0..39) to the current camera quadrant
- * so that avatar steps and facing directions visually correspond to the 3D viewport.
+ * Aligns character and NPC sprite visuals (OAM flip bits and VRAM tile copies)
+ * to the current camera quadrant without modifying the GBA engine's internal
+ * animNum or step animation state machine.
  */
 
 #include <stddef.h>
@@ -10,112 +11,92 @@
 #include <stdbool.h>
 
 #include "global.h"
+#include "gba/defines.h"
 #include "sprite.h"
 #include "event_object_movement.h"
 #include "field_player_avatar.h"
 #include "3ds_platform.h"
+#include "port_platform.h"
 #include "voxel_sprite_dir.h"
 
 extern int CtrVoxel_GetCameraQuadrant(void);
+extern uint8_t CtrVoxel_ToCameraRelativeDirection(uint8_t direction);
 
-/*
- * Camera relative quadrant mapping for directional anims:
- * Direction index: 0 = SOUTH, 1 = NORTH, 2 = WEST, 3 = EAST
- * Quadrants:
- *   q = 0: North view (default, looking North)
- *   q = 1: East view (camera at East, looking West)
- *   q = 2: South view (camera at South, looking North-East/South)
- *   q = 3: West view (camera at West, looking East)
- */
-static const uint8_t sAnimRel[4][4] = {
-    [0] = {0, 1, 2, 3}, /* S, N, W, E */
-    [1] = {2, 3, 1, 0}, /* W, E, N, S */
-    [2] = {1, 0, 3, 2}, /* N, S, E, W */
-    [3] = {3, 2, 0, 1}, /* E, W, S, N */
-};
-
-static inline bool VoxelSprite_IsObjectEventSprite(const struct Sprite *sprite)
+static void VoxelSprite_RequestFrameCopy(u16 index, u16 tileNum, const struct SpriteFrameImage *images)
 {
-    if (sprite == NULL)
-        return false;
-    ptrdiff_t diff = sprite - gSprites;
-    if (diff < 0 || diff >= MAX_SPRITES)
-        return false;
-    unsigned objId = sprite->data[0];
-    if (objId >= OBJECT_EVENTS_COUNT)
-        return false;
-    return (gObjectEvents[objId].active && gObjectEvents[objId].spriteId == (u32)diff);
+    const void *src = images[index].data;
+    u32 size = images[index].size;
+    size = Port_GetSpriteFrameSize(src, size);
+    src = Port_ResolveSpriteFramePointer(src, size, images[index].offset);
+    if (src != NULL && size != 0)
+    {
+        RequestSpriteCopy((const u8 *)src, (u8 *)(OBJ_VRAM0 + tileNum * TILE_SIZE_4BPP), (u16)size);
+    }
 }
 
-uint8_t VoxelSprite_RotateAnimNum(uint8_t animNum)
+void VoxelSprite_AfterAnimateSprites(void)
 {
-    if (!CtrSettings_Voxel() || animNum >= 40)
-        return animNum;
+    if (!CtrSettings_Voxel() || !CtrGame_IsOverworld())
+        return;
 
     int q = CtrVoxel_GetCameraQuadrant();
     if (q == 0)
-        return animNum;
-
-    uint8_t dir = animNum & 3;
-    uint8_t base = animNum & ~3;
-    return (uint8_t)(base | sAnimRel[q][dir]);
-}
-
-extern void __real_StartSpriteAnim(struct Sprite *sprite, u8 animNum);
-
-void VoxelSprite_OnQuadrantChanged(int newQ)
-{
-    (void)newQ;
-    if (!CtrSettings_Voxel())
         return;
 
     for (unsigned i = 0; i < OBJECT_EVENTS_COUNT; ++i)
     {
         struct ObjectEvent *obj = &gObjectEvents[i];
-        if (!obj->active || obj->spriteId >= MAX_SPRITES)
-            continue;
-        if (obj->heldMovementActive)
+        if (!obj->active || obj->inanimate || obj->spriteId >= MAX_SPRITES)
             continue;
 
         struct Sprite *sprite = &gSprites[obj->spriteId];
-        u8 dir = obj->facingDirection;
-        if (dir >= 1 && dir <= 4)
+        if (!sprite->inUse || sprite->anims == NULL)
+            continue;
+
+        uint8_t dir = obj->facingDirection;
+        if (dir < 1 || dir > 4)
+            continue;
+
+        uint8_t relDir = CtrVoxel_ToCameraRelativeDirection(dir);
+        if (relDir < 1 || relDir > 4)
+            continue;
+
+        if (sprite->animNum >= 40)
+            continue;
+
+        uint8_t base = sprite->animNum & ~3;
+        uint8_t targetAnim = (uint8_t)(base | (relDir - 1));
+        if (targetAnim == sprite->animNum || sprite->anims[targetAnim] == NULL)
+            continue;
+
+        u8 cmdIdx = sprite->animCmdIndex;
+        const union AnimCmd *cmd = &sprite->anims[targetAnim][cmdIdx];
+        if (cmd->type < 0)
+            cmd = &sprite->anims[targetAnim][0];
+
+        s16 imageValue = cmd->frame.imageValue;
+        if (imageValue != -1)
         {
-            u8 animNum = GetFaceDirectionAnimNum(dir);
-            animNum = VoxelSprite_RotateAnimNum(animNum);
-            __real_StartSpriteAnim(sprite, animNum);
-            SeekSpriteAnim(sprite, 0);
+            u8 hFlip = cmd->frame.hFlip;
+            u8 vFlip = cmd->frame.vFlip;
+
+            if (!(sprite->oam.affineMode & ST_OAM_AFFINE_ON_MASK))
+            {
+                sprite->oam.matrixNum &= 0x7;
+                sprite->oam.matrixNum |= (((hFlip ^ sprite->hFlip) & 1) << 3);
+                sprite->oam.matrixNum |= (((vFlip ^ sprite->vFlip) & 1) << 4);
+            }
+
+            if (sprite->usingSheet)
+                sprite->oam.tileNum = sprite->sheetTileStart + imageValue;
+            else
+                VoxelSprite_RequestFrameCopy(imageValue, sprite->oam.tileNum, sprite->images);
         }
     }
 }
 
-extern void __real_SetStepAnim(struct ObjectEvent *objectEvent, struct Sprite *sprite, u8 animNum);
-void __wrap_SetStepAnim(struct ObjectEvent *objectEvent, struct Sprite *sprite, u8 animNum)
+void VoxelSprite_OnQuadrantChanged(int newQ)
 {
-    if (CtrSettings_Voxel())
-        animNum = VoxelSprite_RotateAnimNum(animNum);
-    __real_SetStepAnim(objectEvent, sprite, animNum);
-}
-
-extern void __real_SetStepAnimHandleAlternation(struct ObjectEvent *objectEvent, struct Sprite *sprite, u8 animNum);
-void __wrap_SetStepAnimHandleAlternation(struct ObjectEvent *objectEvent, struct Sprite *sprite, u8 animNum)
-{
-    if (CtrSettings_Voxel())
-        animNum = VoxelSprite_RotateAnimNum(animNum);
-    __real_SetStepAnimHandleAlternation(objectEvent, sprite, animNum);
-}
-
-void __wrap_StartSpriteAnim(struct Sprite *sprite, u8 animNum)
-{
-    if (CtrSettings_Voxel() && VoxelSprite_IsObjectEventSprite(sprite))
-        animNum = VoxelSprite_RotateAnimNum(animNum);
-    __real_StartSpriteAnim(sprite, animNum);
-}
-
-extern void __real_StartSpriteAnimIfDifferent(struct Sprite *sprite, u8 animNum);
-void __wrap_StartSpriteAnimIfDifferent(struct Sprite *sprite, u8 animNum)
-{
-    if (CtrSettings_Voxel() && VoxelSprite_IsObjectEventSprite(sprite))
-        animNum = VoxelSprite_RotateAnimNum(animNum);
-    __real_StartSpriteAnimIfDifferent(sprite, animNum);
+    (void)newQ;
+    VoxelSprite_AfterAnimateSprites();
 }
