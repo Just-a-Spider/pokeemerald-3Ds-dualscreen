@@ -579,23 +579,26 @@ static void DrawFps(C3D_RenderTarget *target)
     C2D_DrawRectSolid(2, 2, 0, boxW, boxH, C2D_Color32(0, 0, 0, 160));
     DrawLine3x5(2 + FPS_PIXEL * 2, 2 + FPS_PIXEL * 2, fpsStr, C2D_Color32(255, 255, 255, 255));
 
-    /* Command Guide box below FPS */
-    static const char *const sCommands[] = {
-        "Y+PAD: 360 CAM",
-        "SEL: NORTH",
-        "START: MENU",
-        "L+R: SPEED 1-4X",
-        "X+DPAD: TIME -/+",
-        "L+Y: HUD",
-    };
-    float cmdW = 16 * FPS_ADVANCE + FPS_PIXEL * 4;
-    float cmdH = 6 * (5 * FPS_PIXEL + 3) + FPS_PIXEL * 3;
-    float cmdY = boxH + 4;
-    C2D_DrawRectSolid(2, cmdY, 0, cmdW, cmdH, C2D_Color32(0, 0, 0, 175));
-    for (unsigned l = 0; l < 6; ++l)
+    /* Command Guide box below FPS (suppressed in battle to avoid dropping 3-5 FPS on Old 3DS) */
+    if (!sBattle)
     {
-        DrawLine3x5(2 + FPS_PIXEL * 2, cmdY + FPS_PIXEL * 2 + l * (5 * FPS_PIXEL + 3),
-                    sCommands[l], C2D_Color32(230, 230, 230, 255));
+        static const char *const sCommands[] = {
+            "Y+PAD: 360 CAM",
+            "SEL: NORTH",
+            "START: MENU",
+            "L+R: SPEED 1-4X",
+            "X+DPAD: TIME -/+",
+            "L+Y: HUD",
+        };
+        float cmdW = 16 * FPS_ADVANCE + FPS_PIXEL * 4;
+        float cmdH = 6 * (5 * FPS_PIXEL + 3) + FPS_PIXEL * 3;
+        float cmdY = boxH + 4;
+        C2D_DrawRectSolid(2, cmdY, 0, cmdW, cmdH, C2D_Color32(0, 0, 0, 175));
+        for (unsigned l = 0; l < 6; ++l)
+        {
+            DrawLine3x5(2 + FPS_PIXEL * 2, cmdY + FPS_PIXEL * 2 + l * (5 * FPS_PIXEL + 3),
+                        sCommands[l], C2D_Color32(230, 230, 230, 255));
+        }
     }
     C2D_Flush();
 }

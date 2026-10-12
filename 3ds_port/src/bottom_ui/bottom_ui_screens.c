@@ -395,8 +395,10 @@ static void DrawSummary(const ViewState *s)
 /* Drawing: region map                                                    */
 /* ------------------------------------------------------------------------ */
 
-#define MAP_ORIGIN_X 8
+#define MAP_ORIGIN_X 0
 #define MAP_ORIGIN_Y 8
+#define MAP_TILES_X  30
+#define MAP_TILES_Y  20
 
 static void DrawMapTile8(u8 tile, int x, int y)
 {
@@ -410,7 +412,7 @@ static void DrawMapTile8(u8 tile, int x, int y)
         {
             /* The map's colours are loaded at palette 7: indices 112 up. */
             u8 v = src[py * 8 + px];
-            if (v >= 112 && v < 144)
+            if (v >= 112 && v < 144 && x + px < CW)
                 Put(x + px, y + py, sRes.mapPal[v - 112]);
         }
 }
@@ -422,10 +424,11 @@ static void BuildMapCache(void)
         return;
     memcpy(sCache[CACHE_MAP], sCache[CACHE_MENU], sizeof(sCanvas));
     sDst = sCache[CACHE_MAP];
-    FillRect(0, 0, CW, 176, sRes.mapPal[0]);
+    /* Palette index 1 is the Hoenn ocean color (0x7F53), index 0 is transparent/black */
+    FillRect(0, 0, CW, 176, sRes.mapPal[1]);
     /* The map is a 64x64 affine map; the ocean around Hoenn is tile 0. */
-    for (int ty = 0; ty < 20; ++ty)
-        for (int tx = 0; tx < CW / 8; ++tx)
+    for (int ty = 0; ty < MAP_TILES_Y; ++ty)
+        for (int tx = 0; tx < MAP_TILES_X; ++tx)
         {
             u8 tile = sRes.mapMap ? sRes.mapMap[ty * 64 + tx] : 0;
             DrawMapTile8(tile, MAP_ORIGIN_X + tx * 8, MAP_ORIGIN_Y + ty * 8);
@@ -442,8 +445,8 @@ static void DrawRegionName(const ViewState *s)
     if (mapsec == MAPSEC_NONE)
         return;
     GetMapName(name, mapsec, 0);
-    DrawPlate(8, 188, 224, 40, picked ? &sLook.chosen : &sLook.plate, 0, picked);
-    DrawStrCentered(&sNormal, name, CW / 2, 200, LABEL_FG(picked), LABEL_SH(picked));
+    DrawPlate(8, 184, 224, 40, picked ? &sLook.chosen : &sLook.plate, 0, picked);
+    DrawStrCentered(&sNormal, name, CW / 2, 196, LABEL_FG(picked), LABEL_SH(picked));
 }
 
 static void DrawRegionMap(const ViewState *s)

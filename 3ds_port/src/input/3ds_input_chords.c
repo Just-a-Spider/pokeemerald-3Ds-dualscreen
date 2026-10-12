@@ -52,6 +52,13 @@ void CtrChords_Update(void)
                 sYUsed = true;
             }
         }
+        /* Y + SELECT Chord: Toggle Voxel Mode on/off */
+        else if (input->physicalDown & CTR_KEY_SELECT)
+        {
+            CtrSettings_SetVoxel(!CtrSettings_Voxel());
+            CtrPlatform_ShowToast(CtrSettings_Voxel() ? "VOXEL MODE: ON" : "VOXEL MODE: OFF");
+            sYUsed = true;
+        }
 #endif
 
         /* Check for stick deflection or D-Pad snap while Y is held */
@@ -111,12 +118,12 @@ void CtrChords_Update(void)
     if (((input->physicalDown & CTR_KEY_R) && (input->physicalHeld & CTR_KEY_L)) ||
         ((input->physicalDown & CTR_KEY_L) && (input->physicalHeld & CTR_KEY_R)))
     {
-        int speed = CtrSettings_Speed();
-        int nextSpeed = (speed >= 4) ? 1 : speed + 1;
-        CtrSettings_SetInt("speed", nextSpeed);
+        CtrSettings_StepSpeed(1, true);
+        int curSpeed = CtrSettings_Speed();
         char toast[16];
-        snprintf(toast, sizeof(toast), "SPEED: %dx", nextSpeed);
+        snprintf(toast, sizeof(toast), "SPEED: %dx", curSpeed);
         CtrPlatform_ShowToast(toast);
+        CtrInput_Mask(CTR_KEY_L | CTR_KEY_R);
     }
 }
 

@@ -2289,7 +2289,9 @@ static uint32_t SiteHash(const ChunkSite *site)
 #endif
         h = VoxelWorld_BlockHash(site->x0 - 1, site->y0 - VOXEL_CHUNK_MARGIN_NORTH - 1,
                                  site->x1 + 1, site->y1 + 2);
-    return h ^ ((uint32_t)CtrVoxel_GetCameraQuadrant() * 0x9e3779b9u);
+    if (VoxelWorld_UsesTreeSprites(site->inst))
+        h ^= ((uint32_t)CtrVoxel_GetCameraQuadrant() * 0x9e3779b9u);
+    return h;
 }
 
 /*
@@ -4116,6 +4118,7 @@ void CtrVoxel_BeginBattle(void)
     memset(&sBattle, 0, sizeof(sBattle));
     sBattle.on = true;
     sBattle.field = sCamera;
+    CtrVoxel_InvalidateTreeQuadrant();
 }
 
 void CtrVoxel_EndBattle(void)
@@ -4125,6 +4128,7 @@ void CtrVoxel_EndBattle(void)
     sBattle.on = false;
     sCamera = sBattle.field;
     TrackMotion(sLastX, sLastZ, true);
+    CtrVoxel_InvalidateTreeQuadrant();
     CtrLog_Write(CTR_LOG_VIDEO, "VOXEL battle over: the field's camera back");
 }
 
@@ -4220,6 +4224,12 @@ static void BattleCamera(void)
       / (float)CTR_GAME_HEIGHT;
     x += sBattle.shakeX * k;
     z += sBattle.shakeY * k / sinf(pitch * degrees);
+    /* Align camera yaw to North (0 deg) during flight */
+    int prevQ = CtrVoxel_GetCameraQuadrant();
+    sCamera.yaw = from->yaw * (1.0f - t);
+    int newQ = CtrVoxel_GetCameraQuadrant();
+    if (newQ != prevQ)
+        CtrVoxel_InvalidateTreeQuadrant();
     VoxelCamera_Frame(&sCamera, x, z, ground, pitch, distance);
 }
 
@@ -5908,6 +5918,8 @@ void CtrVoxel_InvalidateTreeQuadrant(void)
 {
     ++sEpoch;
     for (unsigned i = 0; i < VOXEL_CHUNK_SLOTS; ++i)
-        if (sChunks[i].used)
+    {
+        if (sChunks[i].used && sChunks[i].secondary != NULL)
             sChunks[i].hash = 0;
+    }
 }
